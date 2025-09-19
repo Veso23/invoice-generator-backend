@@ -19,14 +19,9 @@ app.use(helmet({
 app.use(compression());
 app.use(morgan('combined'));
 
-// CORS configuration
+// CORS configuration - Allow all origins for now
 app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    'https://localhost:3000',
-    'https://your-frontend.vercel.app',
-    process.env.FRONTEND_URL
-  ].filter(Boolean),
+  origin: true, // Allow all origins during development
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
