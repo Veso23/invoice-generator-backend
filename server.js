@@ -41,6 +41,8 @@ const limiter = rateLimit({
   max: 100, // limit each IP to 100 requests per windowMs
   message: { error: 'Too many requests, please try again later.' }
 });
+// Trust proxy for Render deployment
+app.set('trust proxy', 1);
 app.use('/api/', limiter);
 
 // Database connection with Supabase
