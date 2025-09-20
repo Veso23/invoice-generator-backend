@@ -245,7 +245,7 @@ app.post('/api/consultants', authenticateToken, checkCompanyAccess, async (req, 
   try {
     const {
       firstName, lastName, companyName, companyAddress,
-      companyVAT, iban, swift, phone, email
+      companyVAT, iban, swift, phone, email, consultantContractId
     } = req.body;
 
     if (!firstName || !lastName || !companyName || !companyVAT) {
@@ -254,17 +254,17 @@ app.post('/api/consultants', authenticateToken, checkCompanyAccess, async (req, 
 
     const result = await pool.query(
       `INSERT INTO consultants 
-       (first_name, last_name, company_name, company_address, company_vat, iban, swift, phone, email, company_id, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW()) 
+       (first_name, last_name, company_name, company_address, company_vat, iban, swift, phone, email, consultant_contract_id, company_id, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW()) 
        RETURNING *`,
-      [firstName, lastName, companyName, companyAddress, companyVAT, iban, swift, phone, email, req.companyId]
+      [firstName, lastName, companyName, companyAddress, companyVAT, iban, swift, phone, email, consultantContractId, req.companyId]
     );
 
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Create consultant error:', error);
     if (error.code === '23505') {
-      res.status(400).json({ error: 'VAT number already exists' });
+      res.status(400).json({ error: 'VAT number or Contract ID already exists' });
     } else {
       res.status(500).json({ error: 'Internal server error' });
     }
@@ -289,7 +289,7 @@ app.post('/api/clients', authenticateToken, checkCompanyAccess, async (req, res)
   try {
     const {
       firstName, lastName, companyName, companyAddress,
-      companyVAT, iban, swift, phone, email
+      companyVAT, iban, swift, phone, email, clientContractId
     } = req.body;
 
     if (!firstName || !lastName || !companyName || !companyVAT) {
@@ -298,17 +298,17 @@ app.post('/api/clients', authenticateToken, checkCompanyAccess, async (req, res)
 
     const result = await pool.query(
       `INSERT INTO clients 
-       (first_name, last_name, company_name, company_address, company_vat, iban, swift, phone, email, company_id, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW()) 
+       (first_name, last_name, company_name, company_address, company_vat, iban, swift, phone, email, client_contract_id, company_id, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW()) 
        RETURNING *`,
-      [firstName, lastName, companyName, companyAddress, companyVAT, iban, swift, phone, email, req.companyId]
+      [firstName, lastName, companyName, companyAddress, companyVAT, iban, swift, phone, email, clientContractId, req.companyId]
     );
 
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Create client error:', error);
     if (error.code === '23505') {
-      res.status(400).json({ error: 'VAT number already exists' });
+      res.status(400).json({ error: 'VAT number or Contract ID already exists' });
     } else {
       res.status(500).json({ error: 'Internal server error' });
     }
