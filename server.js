@@ -450,11 +450,21 @@ app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAc
 app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT i.*, c.consultant_contract_id, c.client_contract_id
-      FROM invoices i
-      JOIN contracts c ON i.contract_id = c.id
-      WHERE i.company_id = $1
-      ORDER BY i.created_at DESC
+SELECT i.*, 
+       c.consultant_contract_id, 
+       c.client_contract_id,
+       cons.first_name as consultant_first_name,
+       cons.last_name as consultant_last_name,
+       cons.company_name as consultant_company_name,
+       cli.first_name as client_first_name,
+       cli.last_name as client_last_name,
+       cli.company_name as client_company_name
+FROM invoices i
+JOIN contracts c ON i.contract_id = c.id
+JOIN consultants cons ON c.consultant_id = cons.id
+JOIN clients cli ON c.client_id = cli.id
+WHERE i.company_id = $1
+ORDER BY i.created_at DESC
     `, [req.companyId]);
 
     res.json(result.rows);
