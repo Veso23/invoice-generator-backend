@@ -350,13 +350,11 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
       purchasePrice, sellPrice
     } = req.body;
 
-    console.log('Contract creation request:', req.body); // Debug log
-
     if (!contractNumber || !consultantId || !clientId || !fromDate || !toDate || !purchasePrice || !sellPrice) {
       return res.status(400).json({ error: 'All contract fields including contract number are required' });
     }
 
-    // Get consultant and client contract IDs from their records with company validation
+    // Get consultant and client contract IDs from their records
     const consultantResult = await pool.query(
       'SELECT consultant_contract_id FROM consultants WHERE id = $1 AND company_id = $2', 
       [consultantId, req.companyId]
@@ -368,17 +366,16 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
     );
 
     if (consultantResult.rows.length === 0) {
-      return res.status(400).json({ error: 'Consultant not found or not accessible' });
+      return res.status(400).json({ error: 'Consultant not found' });
     }
 
     if (clientResult.rows.length === 0) {
-      return res.status(400).json({ error: 'Client not found or not accessible' });
+      return res.status(400).json({ error: 'Client not found' });
     }
 
-    const consultantContractId = consultantResult.rows[0].consultant_contract_id;
-    const clientContractId = clientResult.rows[0].client_contract_id;
-
-    console.log('Found contract IDs:', { consultantContractId, clientContractId }); // Debug log
+    // Use empty string if contract IDs are null
+    const consultantContractId = consultantResult.rows[0].consultant_contract_id || '';
+    const clientContractId = clientResult.rows[0].client_contract_id || '';
 
     const result = await pool.query(`
       INSERT INTO contracts 
@@ -389,7 +386,6 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
     `, [contractNumber, consultantId, clientId, fromDate, toDate, purchasePrice, sellPrice, 
         consultantContractId, clientContractId, req.companyId]);
 
-    console.log('Contract created successfully:', result.rows[0]); // Debug log
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Create contract error:', error);
