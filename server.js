@@ -342,6 +342,7 @@ app.get('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res
   }
 });
 
+
 app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const {
