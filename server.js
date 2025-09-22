@@ -347,12 +347,19 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
   try {
     const {
       contractNumber, consultantId, clientId, fromDate, toDate,
-      purchasePrice, sellPrice, consultantContractId, clientContractId
+      purchasePrice, sellPrice
     } = req.body;
 
     if (!contractNumber || !consultantId || !clientId || !fromDate || !toDate || !purchasePrice || !sellPrice) {
       return res.status(400).json({ error: 'All contract fields including contract number are required' });
     }
+
+    // Get consultant and client contract IDs from their records
+    const consultantResult = await pool.query('SELECT consultant_contract_id FROM consultants WHERE id = $1', [consultantId]);
+    const clientResult = await pool.query('SELECT client_contract_id FROM clients WHERE id = $1', [clientId]);
+
+    const consultantContractId = consultantResult.rows[0]?.consultant_contract_id;
+    const clientContractId = clientResult.rows[0]?.client_contract_id;
 
     const result = await pool.query(`
       INSERT INTO contracts 
@@ -373,7 +380,6 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
     }
   }
 });
-
 // Invoice Generation
 app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
