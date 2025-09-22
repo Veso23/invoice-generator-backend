@@ -323,9 +323,11 @@ app.get('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res
              cons.company_name as consultant_company_name,
              cons.first_name as consultant_first_name,
              cons.last_name as consultant_last_name,
+             cons.company_vat as consultant_company_vat,
              cli.company_name as client_company_name,
              cli.first_name as client_first_name,
-             cli.last_name as client_last_name
+             cli.last_name as client_last_name,
+             cli.company_vat as client_company_vat
       FROM contracts c
       JOIN consultants cons ON c.consultant_id = cons.id
       JOIN clients cli ON c.client_id = cli.id
