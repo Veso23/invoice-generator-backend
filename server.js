@@ -346,27 +346,31 @@ app.get('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res
 app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const {
-      consultantId, clientId, fromDate, toDate,
+      contractNumber, consultantId, clientId, fromDate, toDate,
       purchasePrice, sellPrice, consultantContractId, clientContractId
     } = req.body;
 
-    if (!consultantId || !clientId || !fromDate || !toDate || !purchasePrice || !sellPrice) {
-      return res.status(400).json({ error: 'All contract fields are required' });
+    if (!contractNumber || !consultantId || !clientId || !fromDate || !toDate || !purchasePrice || !sellPrice) {
+      return res.status(400).json({ error: 'All contract fields including contract number are required' });
     }
 
     const result = await pool.query(`
       INSERT INTO contracts 
-      (consultant_id, client_id, from_date, to_date, purchase_price, sell_price, 
+      (contract_number, consultant_id, client_id, from_date, to_date, purchase_price, sell_price, 
        consultant_contract_id, client_contract_id, company_id, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW()) 
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW()) 
       RETURNING *
-    `, [consultantId, clientId, fromDate, toDate, purchasePrice, sellPrice, 
+    `, [contractNumber, consultantId, clientId, fromDate, toDate, purchasePrice, sellPrice, 
         consultantContractId, clientContractId, req.companyId]);
 
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Create contract error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    if (error.code === '23505') {
+      res.status(400).json({ error: 'Contract number already exists' });
+    } else {
+      res.status(500).json({ error: 'Internal server error' });
+    }
   }
 });
 
