@@ -457,6 +457,32 @@ app.put('/api/timesheets/:id/match', authenticateToken, checkCompanyAccess, asyn
   }
 });
 
+// Update timesheet days
+app.put('/api/timesheets/:id/days', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { days } = req.body;
+
+    if (!days || isNaN(days) || days < 0) {
+      return res.status(400).json({ error: 'Valid days value is required' });
+    }
+
+    const result = await pool.query(
+      'UPDATE automation_logs SET pdf_days = $1 WHERE id = $2 RETURNING *',
+      [days, id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Timesheet not found' });
+    }
+
+    res.json({ success: true, message: 'Days updated successfully' });
+  } catch (error) {
+    console.error('Update timesheet days error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Invoice Generation
 app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
