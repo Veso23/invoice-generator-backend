@@ -420,6 +420,42 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
   }
 });
 
+// Match timesheet to consultant
+app.put('/api/timesheets/:id/match', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { consultantId } = req.body;
+
+    if (!consultantId) {
+      return res.status(400).json({ error: 'Consultant ID is required' });
+    }
+
+    // Verify consultant belongs to the same company
+    const consultant = await pool.query(
+      'SELECT * FROM consultants WHERE id = $1 AND company_id = $2',
+      [consultantId, req.companyId]
+    );
+
+    if (consultant.rows.length === 0) {
+      return res.status(404).json({ error: 'Consultant not found' });
+    }
+
+    // Update automation_logs with consultant email to create the match
+    const result = await pool.query(
+      'UPDATE automation_logs SET sender_email = $1 WHERE id = $2 RETURNING *',
+      [consultant.rows[0].email, id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Timesheet not found' });
+    }
+
+    res.json({ success: true, message: 'Timesheet matched successfully' });
+  } catch (error) {
+    console.error('Match timesheet error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 // Invoice Generation
 app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAccess, async (req, res) => {
