@@ -657,8 +657,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
   }
 });
 
-// Get all invoices
-app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res) => {
+
 // Get all invoices
 app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
