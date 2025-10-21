@@ -778,7 +778,7 @@ app.post('/api/n8n/automation-data', async (req, res) => {
   }
 });
 
-// Get automation logs
+// Get automation logs (existing)
 app.get('/api/automation-logs', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -789,6 +789,34 @@ app.get('/api/automation-logs', authenticateToken, async (req, res) => {
     res.json(result.rows);
   } catch (error) {
     console.error('Get automation logs error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ⬇️⬇️⬇️ ADD THIS NEW ENDPOINT ⬇️⬇️⬇️
+
+// Get timesheets (enhanced with consultant matching)
+app.get('/api/timesheets', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        al.*,
+        CASE 
+          WHEN c.id IS NOT NULL THEN true 
+          ELSE false 
+        END as consultant_matched,
+        c.first_name as consultant_first_name,
+        c.last_name as consultant_last_name,
+        c.company_name as consultant_company_name
+      FROM automation_logs al
+      LEFT JOIN consultants c ON al.sender_email = c.email AND c.company_id = $1
+      ORDER BY al.created_at DESC 
+      LIMIT 100
+    `, [req.companyId]);
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get timesheets error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
