@@ -1,4 +1,4 @@
-// server.js - Complete Backend API for Railway Deployment
+// server.js - Updated with Timesheet Invoice Generation
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -19,9 +19,9 @@ app.use(helmet({
 app.use(compression());
 app.use(morgan('combined'));
 
-// CORS configuration - Allow all origins for now
+// CORS configuration
 app.use(cors({
-  origin: true, // Allow all origins during development
+  origin: true,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -32,15 +32,14 @@ app.use(express.urlencoded({ extended: true }));
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 100,
   message: { error: 'Too many requests, please try again later.' }
 });
-// Trust proxy for Render deployment
 app.set('trust proxy', 1);
 app.use('/api/', limiter);
 
-// Database connection with Supabase
+// Database connection
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
@@ -48,7 +47,6 @@ const pool = new Pool({
   }
 });
 
-// Test database connection
 pool.on('connect', () => {
   console.log('✅ Connected to Supabase database');
 });
@@ -88,6 +86,30 @@ const checkCompanyAccess = (req, res, next) => {
   next();
 };
 
+// Helper function to get last day of month
+const getLastDayOfMonth = (dateString) => {
+  const date = new Date(dateString);
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0);
+};
+
+// Helper function to generate invoice number
+const generateInvoiceNumber = async (year) => {
+  const result = await pool.query(
+    `SELECT invoice_number FROM invoices 
+     WHERE invoice_number LIKE $1 
+     ORDER BY invoice_number DESC LIMIT 1`,
+    [`${year}-%`]
+  );
+  
+  if (result.rows.length === 0) {
+    return `${year}-0001`;
+  }
+  
+  const lastNumber = result.rows[0].invoice_number;
+  const numberPart = parseInt(lastNumber.split('-')[1]) + 1;
+  return `${year}-${numberPart.toString().padStart(4, '0')}`;
+};
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
@@ -110,6 +132,7 @@ app.get('/', (req, res) => {
       clients: '/api/clients',
       contracts: '/api/contracts',
       invoices: '/api/invoices',
+      timesheets: '/api/timesheets',
       automation: '/api/automation-logs'
     }
   });
@@ -124,29 +147,24 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'All fields are required' });
     }
 
-    // Check if user exists
     const existingUser = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     if (existingUser.rows.length > 0) {
       return res.status(400).json({ error: 'User already exists' });
     }
 
-    // Hash password
     const saltRounds = 12;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    // Start transaction
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
-      // Create company first
       const companyResult = await client.query(
         'INSERT INTO companies (name, created_at) VALUES ($1, NOW()) RETURNING id',
         [companyName]
       );
       const companyId = companyResult.rows[0].id;
 
-      // Create user
       const userResult = await client.query(
         'INSERT INTO users (email, password_hash, first_name, last_name, company_id, role, created_at) VALUES ($1, $2, $3, $4, $5, $6, NOW()) RETURNING id, email, first_name, last_name, role, company_id',
         [email, hashedPassword, firstName, lastName, companyId, 'admin']
@@ -193,7 +211,6 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    // Find user
     const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
     const user = result.rows[0];
 
@@ -201,7 +218,6 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // Update last login
     await pool.query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id]);
 
     const token = jwt.sign(
@@ -243,31 +259,65 @@ app.get('/api/consultants', authenticateToken, checkCompanyAccess, async (req, r
 
 app.post('/api/consultants', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
-    const {
-      firstName, lastName, companyName, companyAddress,
-      companyVAT, iban, swift, phone, email, consultantContractId
-    } = req.body;
-
-    if (!firstName || !lastName || !companyName || !companyVAT) {
-      return res.status(400).json({ error: 'Required fields: firstName, lastName, companyName, companyVAT' });
-    }
+    const { firstName, lastName, email, companyName, companyAddress, companyVat, iban, swift, phone, consultantContractId } = req.body;
 
     const result = await pool.query(
       `INSERT INTO consultants 
-       (first_name, last_name, company_name, company_address, company_vat, iban, swift, phone, email, consultant_contract_id, company_id, created_at)
+       (first_name, last_name, email, company_name, company_address, company_vat, iban, swift, phone, company_id, consultant_contract_id, created_at) 
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW()) 
        RETURNING *`,
-      [firstName, lastName, companyName, companyAddress, companyVAT, iban, swift, phone, email, consultantContractId, req.companyId]
+      [firstName, lastName, email, companyName, companyAddress, companyVat, iban, swift, phone, req.companyId, consultantContractId]
     );
 
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Create consultant error:', error);
-    if (error.code === '23505') {
-      res.status(400).json({ error: 'VAT number or Contract ID already exists' });
-    } else {
-      res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/api/consultants/:id', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { firstName, lastName, email, companyName, companyAddress, companyVat, iban, swift, phone, consultantContractId } = req.body;
+
+    const result = await pool.query(
+      `UPDATE consultants 
+       SET first_name = $1, last_name = $2, email = $3, company_name = $4, 
+           company_address = $5, company_vat = $6, iban = $7, swift = $8, 
+           phone = $9, consultant_contract_id = $10, updated_at = NOW()
+       WHERE id = $11 AND company_id = $12 
+       RETURNING *`,
+      [firstName, lastName, email, companyName, companyAddress, companyVat, iban, swift, phone, consultantContractId, id, req.companyId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Consultant not found' });
     }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Update consultant error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.delete('/api/consultants/:id', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      'DELETE FROM consultants WHERE id = $1 AND company_id = $2 RETURNING *',
+      [id, req.companyId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Consultant not found' });
+    }
+
+    res.json({ message: 'Consultant deleted successfully' });
+  } catch (error) {
+    console.error('Delete consultant error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -287,54 +337,82 @@ app.get('/api/clients', authenticateToken, checkCompanyAccess, async (req, res) 
 
 app.post('/api/clients', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
-    const {
-      firstName, lastName, companyName, companyAddress,
-      companyVAT, iban, swift, phone, email, clientContractId
-    } = req.body;
-
-    if (!firstName || !lastName || !companyName || !companyVAT) {
-      return res.status(400).json({ error: 'Required fields: firstName, lastName, companyName, companyVAT' });
-    }
+    const { firstName, lastName, companyName, companyAddress, companyVat, iban, swift, phone, email, clientContractId } = req.body;
 
     const result = await pool.query(
       `INSERT INTO clients 
-       (first_name, last_name, company_name, company_address, company_vat, iban, swift, phone, email, client_contract_id, company_id, created_at)
+       (first_name, last_name, company_name, company_address, company_vat, iban, swift, phone, email, company_id, client_contract_id, created_at) 
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW()) 
        RETURNING *`,
-      [firstName, lastName, companyName, companyAddress, companyVAT, iban, swift, phone, email, clientContractId, req.companyId]
+      [firstName, lastName, companyName, companyAddress, companyVat, iban, swift, phone, email, req.companyId, clientContractId]
     );
 
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Create client error:', error);
-    if (error.code === '23505') {
-      res.status(400).json({ error: 'VAT number or Contract ID already exists' });
-    } else {
-      res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.put('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { firstName, lastName, companyName, companyAddress, companyVat, iban, swift, phone, email, clientContractId } = req.body;
+
+    const result = await pool.query(
+      `UPDATE clients 
+       SET first_name = $1, last_name = $2, company_name = $3, company_address = $4, 
+           company_vat = $5, iban = $6, swift = $7, phone = $8, email = $9, 
+           client_contract_id = $10, updated_at = NOW()
+       WHERE id = $11 AND company_id = $12 
+       RETURNING *`,
+      [firstName, lastName, companyName, companyAddress, companyVat, iban, swift, phone, email, clientContractId, id, req.companyId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Client not found' });
     }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Update client error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.delete('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      'DELETE FROM clients WHERE id = $1 AND company_id = $2 RETURNING *',
+      [id, req.companyId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
+    res.json({ message: 'Client deleted successfully' });
+  } catch (error) {
+    console.error('Delete client error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 // Contract Routes
 app.get('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT c.*, 
-             cons.company_name as consultant_company_name,
-             cons.first_name as consultant_first_name,
-             cons.last_name as consultant_last_name,
-             cons.company_vat as consultant_company_vat,
-             cli.company_name as client_company_name,
-             cli.first_name as client_first_name,
-             cli.last_name as client_last_name,
-             cli.company_vat as client_company_vat
-      FROM contracts c
-      JOIN consultants cons ON c.consultant_id = cons.id
-      JOIN clients cli ON c.client_id = cli.id
-      WHERE c.company_id = $1
-      ORDER BY c.created_at DESC
-    `, [req.companyId]);
-
+    const result = await pool.query(
+      `SELECT c.*, 
+              cons.first_name as consultant_first_name, cons.last_name as consultant_last_name, cons.company_name as consultant_company,
+              cli.first_name as client_first_name, cli.last_name as client_last_name, cli.company_name as client_company
+       FROM contracts c
+       LEFT JOIN consultants cons ON c.consultant_id = cons.id
+       LEFT JOIN clients cli ON c.client_id = cli.id
+       WHERE c.company_id = $1
+       ORDER BY c.created_at DESC`,
+      [req.companyId]
+    );
     res.json(result.rows);
   } catch (error) {
     console.error('Get contracts error:', error);
@@ -342,72 +420,24 @@ app.get('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res
   }
 });
 
-// Timesheets Routes
-app.get('/api/timesheets', authenticateToken, checkCompanyAccess, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT al.*,
-             c.first_name as consultant_first_name,
-             c.last_name as consultant_last_name,
-             c.company_name as consultant_company_name,
-             c.id as consultant_id,
-             CASE WHEN c.id IS NOT NULL THEN true ELSE false END as consultant_matched
-      FROM automation_logs al
-      LEFT JOIN consultants c ON al.sender_email = c.email AND c.company_id = $1
-      WHERE al.processed = false
-      ORDER BY al.created_at DESC
-    `, [req.companyId]);
-
-    res.json(result.rows);
-  } catch (error) {
-    console.error('Get timesheets error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-
 app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
-    const {
-      contractNumber, consultantId, clientId, fromDate, toDate,
-      purchasePrice, sellPrice
+    const { 
+      consultantId, clientId, consultantContractId, clientContractId,
+      fromDate, toDate, purchasePrice, sellPrice, currency, status, notes, contractNumber
     } = req.body;
 
-    if (!contractNumber || !consultantId || !clientId || !fromDate || !toDate || !purchasePrice || !sellPrice) {
-      return res.status(400).json({ error: 'All contract fields including contract number are required' });
-    }
-
-    // Get consultant and client contract IDs from their records
-    const consultantResult = await pool.query(
-      'SELECT consultant_contract_id FROM consultants WHERE id = $1 AND company_id = $2', 
-      [consultantId, req.companyId]
+    const result = await pool.query(
+      `INSERT INTO contracts 
+       (consultant_id, client_id, consultant_contract_id, client_contract_id, 
+        from_date, to_date, purchase_price, sell_price, currency, status, notes, 
+        company_id, contract_number, created_at) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW()) 
+       RETURNING *`,
+      [consultantId, clientId, consultantContractId, clientContractId, 
+       fromDate, toDate, purchasePrice, sellPrice, currency || 'EUR', 
+       status || 'active', notes, req.companyId, contractNumber]
     );
-    
-    const clientResult = await pool.query(
-      'SELECT client_contract_id FROM clients WHERE id = $1 AND company_id = $2', 
-      [clientId, req.companyId]
-    );
-
-    if (consultantResult.rows.length === 0) {
-      return res.status(400).json({ error: 'Consultant not found' });
-    }
-
-    if (clientResult.rows.length === 0) {
-      return res.status(400).json({ error: 'Client not found' });
-    }
-
-    // Use empty string if contract IDs are null
-    const consultantContractId = consultantResult.rows[0].consultant_contract_id || '';
-    const clientContractId = clientResult.rows[0].client_contract_id || '';
-
-    const result = await pool.query(`
-      INSERT INTO contracts 
-      (contract_number, consultant_id, client_id, from_date, to_date, purchase_price, sell_price, 
-       consultant_contract_id, client_contract_id, company_id, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW()) 
-      RETURNING *
-    `, [contractNumber, consultantId, clientId, fromDate, toDate, purchasePrice, sellPrice, 
-        consultantContractId, clientContractId, req.companyId]);
 
     res.status(201).json(result.rows[0]);
   } catch (error) {
@@ -430,7 +460,6 @@ app.put('/api/timesheets/:id/match', authenticateToken, checkCompanyAccess, asyn
       return res.status(400).json({ error: 'Consultant ID is required' });
     }
 
-    // Verify consultant belongs to the same company
     const consultant = await pool.query(
       'SELECT * FROM consultants WHERE id = $1 AND company_id = $2',
       [consultantId, req.companyId]
@@ -440,7 +469,6 @@ app.put('/api/timesheets/:id/match', authenticateToken, checkCompanyAccess, asyn
       return res.status(404).json({ error: 'Consultant not found' });
     }
 
-    // Update automation_logs with consultant email to create the match
     const result = await pool.query(
       'UPDATE automation_logs SET sender_email = $1 WHERE id = $2 RETURNING *',
       [consultant.rows[0].email, id]
@@ -483,12 +511,151 @@ app.put('/api/timesheets/:id/days', authenticateToken, checkCompanyAccess, async
   }
 });
 
-// Invoice Generation
+// NEW: Generate invoice from timesheet
+app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get timesheet data
+    const timesheetResult = await pool.query(
+      'SELECT * FROM automation_logs WHERE id = $1',
+      [id]
+    );
+
+    if (timesheetResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Timesheet not found' });
+    }
+
+    const timesheet = timesheetResult.rows[0];
+
+    // Check if consultant is matched
+    if (!timesheet.sender_email) {
+      return res.status(400).json({ error: 'Timesheet must be matched to a consultant first' });
+    }
+
+    // Get consultant
+    const consultantResult = await pool.query(
+      'SELECT * FROM consultants WHERE email = $1 AND company_id = $2',
+      [timesheet.sender_email, req.companyId]
+    );
+
+    if (consultantResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Consultant not found' });
+    }
+
+    const consultant = consultantResult.rows[0];
+
+    // Find active contract for this consultant
+    const contractResult = await pool.query(
+      `SELECT c.*, 
+              cli.first_name as client_first_name, 
+              cli.last_name as client_last_name,
+              cli.company_name as client_company_name,
+              cli.company_address as client_address,
+              cli.company_vat as client_vat
+       FROM contracts c
+       JOIN clients cli ON c.client_id = cli.id
+       WHERE c.consultant_id = $1 
+         AND c.company_id = $2 
+         AND c.status = 'active'
+       ORDER BY c.created_at DESC 
+       LIMIT 1`,
+      [consultant.id, req.companyId]
+    );
+
+    if (contractResult.rows.length === 0) {
+      return res.status(404).json({ 
+        error: 'No active contract found for this consultant. Please create a contract first.' 
+      });
+    }
+
+    const contract = contractResult.rows[0];
+
+    // Parse the month from timesheet to get the period
+    const monthStr = timesheet.month || new Date().toISOString().slice(0, 7); // e.g., "2025-03"
+    const [year, month] = monthStr.split('-');
+    const periodFrom = new Date(year, month - 1, 1); // First day of month
+    const periodTo = getLastDayOfMonth(monthStr); // Last day of month
+
+    // Get days worked from timesheet
+    const daysWorked = parseFloat(timesheet.pdf_days || timesheet.email_days || 0);
+
+    if (daysWorked <= 0) {
+      return res.status(400).json({ error: 'Invalid days worked in timesheet' });
+    }
+
+    // Generate invoice number
+    const invoiceNumber = await generateInvoiceNumber(year);
+
+    // Calculate amounts (CLIENT invoice - using sell_price)
+    const dailyRate = parseFloat(contract.sell_price);
+    const subtotal = dailyRate * daysWorked;
+    const vatRate = 0.21; // 21% VAT
+    const vatAmount = subtotal * vatRate;
+    const totalAmount = subtotal + vatAmount;
+
+    // Create invoice
+    const invoiceResult = await pool.query(
+      `INSERT INTO invoices 
+       (invoice_number, contract_id, invoice_type, invoice_date, due_date, 
+        period_from, period_to, days_worked, daily_rate, subtotal, vat_rate, 
+        vat_amount, total_amount, currency, status, company_id, created_by, created_at)
+       VALUES ($1, $2, 'client', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
+       RETURNING *`,
+      [
+        invoiceNumber,
+        contract.id,
+        'client',
+        periodTo, // Invoice date = last day of month
+        new Date(periodTo.getTime() + 30 * 24 * 60 * 60 * 1000), // Due date = 30 days after invoice date
+        periodFrom,
+        periodTo,
+        daysWorked,
+        dailyRate,
+        subtotal,
+        vatRate,
+        vatAmount,
+        totalAmount,
+        contract.currency || 'EUR',
+        'draft',
+        req.companyId,
+        req.user.id
+      ]
+    );
+
+    // Mark timesheet as invoice generated
+    await pool.query(
+      'UPDATE automation_logs SET invoice_generated = true, processed = true, processed_at = NOW() WHERE id = $1',
+      [id]
+    );
+
+    const invoice = invoiceResult.rows[0];
+
+    res.status(201).json({
+      message: 'Invoice generated successfully',
+      invoice: {
+        ...invoice,
+        consultant_first_name: consultant.first_name,
+        consultant_last_name: consultant.last_name,
+        consultant_company_name: consultant.company_name,
+        client_first_name: contract.client_first_name,
+        client_last_name: contract.client_last_name,
+        client_company_name: contract.client_company_name,
+        client_contract_id: contract.client_contract_id
+      }
+    });
+
+  } catch (error) {
+    console.error('Generate invoice from timesheet error:', error);
+    res.status(500).json({ error: 'Internal server error: ' + error.message });
+  }
+});
+
+// Invoice Generation from Contract (existing)
 app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { contractId } = req.params;
 
-    // Get contract with consultant and client details
     const contractResult = await pool.query(`
       SELECT c.*, 
              cons.first_name as consultant_first_name, cons.last_name as consultant_last_name,
@@ -511,16 +678,14 @@ app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAc
 
     const contract = contractResult.rows[0];
     
-    // Calculate days
     const fromDate = new Date(contract.from_date);
     const toDate = new Date(contract.to_date);
     const days = Math.ceil((toDate - fromDate) / (1000 * 60 * 60 * 24)) + 1;
 
-    // Generate invoice numbers using the database function
-    const consultantInvoiceNumber = `INV-CONS-${Date.now()}`;
-    const clientInvoiceNumber = `INV-CLI-${Date.now()}`;
+    const year = toDate.getFullYear().toString();
+    const consultantInvoiceNumber = await generateInvoiceNumber(year);
+    const clientInvoiceNumber = await generateInvoiceNumber(year);
 
-    // Calculate amounts
     const consultantSubtotal = contract.purchase_price * days;
     const consultantVAT = consultantSubtotal * 0.2;
     const consultantTotal = consultantSubtotal + consultantVAT;
@@ -529,7 +694,6 @@ app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAc
     const clientVAT = clientSubtotal * 0.2;
     const clientTotal = clientSubtotal + clientVAT;
 
-    // Create consultant invoice
     const consultantInvoiceResult = await pool.query(`
       INSERT INTO invoices 
       (invoice_number, contract_id, invoice_type, invoice_date, period_from, period_to,
@@ -539,7 +703,6 @@ app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAc
     `, [consultantInvoiceNumber, contractId, contract.from_date, contract.to_date,
         days, contract.purchase_price, consultantSubtotal, consultantVAT, consultantTotal, req.companyId, req.user.id]);
 
-    // Create client invoice
     const clientInvoiceResult = await pool.query(`
       INSERT INTO invoices 
       (invoice_number, contract_id, invoice_type, invoice_date, period_from, period_to,
@@ -590,7 +753,7 @@ ORDER BY i.created_at DESC
   }
 });
 
-// N8N Integration - Webhook endpoint
+// N8N Integration
 app.post('/api/n8n/automation-data', async (req, res) => {
   try {
     const {
