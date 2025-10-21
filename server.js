@@ -561,7 +561,104 @@ app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAc
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+// Generate invoice from timesheet using approved days
+app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
 
+    // Get timesheet with approved days
+    const timesheetResult = await pool.query('SELECT * FROM automation_logs WHERE id = $1', [id]);
+    if (timesheetResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Timesheet not found' });
+    }
+    const timesheet = timesheetResult.rows[0];
+
+    // Must be matched to consultant
+    if (!timesheet.sender_email) {
+      return res.status(400).json({ error: 'Please match timesheet to consultant first' });
+    }
+
+    // Get consultant
+    const consultantResult = await pool.query(
+      'SELECT * FROM consultants WHERE email = $1 AND company_id = $2',
+      [timesheet.sender_email, req.companyId]
+    );
+    if (consultantResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Consultant not found' });
+    }
+    const consultant = consultantResult.rows[0];
+
+    // Get active contract
+    const contractResult = await pool.query(
+      `SELECT c.*, cli.first_name as client_first_name, cli.last_name as client_last_name,
+              cli.company_name as client_company_name
+       FROM contracts c JOIN clients cli ON c.client_id = cli.id
+       WHERE c.consultant_id = $1 AND c.company_id = $2 AND c.status = 'active'
+       ORDER BY c.created_at DESC LIMIT 1`,
+      [consultant.id, req.companyId]
+    );
+    if (contractResult.rows.length === 0) {
+      return res.status(404).json({ error: 'No active contract found' });
+    }
+    const contract = contractResult.rows[0];
+
+    // Use ACTUAL days from timesheet (not contract dates!)
+    const daysWorked = parseFloat(timesheet.pdf_days || timesheet.email_days || 0);
+    if (daysWorked <= 0) {
+      return res.status(400).json({ error: 'Invalid days worked in timesheet' });
+    }
+
+    // Get period from timesheet month
+    const monthStr = timesheet.month || new Date().toISOString().slice(0, 7);
+    const [year, month] = monthStr.split('-');
+    const periodFrom = new Date(year, month - 1, 1);
+    const periodTo = new Date(year, month, 0); // Last day of month
+
+    // Generate invoice numbers
+    const timestamp = Date.now();
+    const consultantInvoiceNumber = `INV-CONS-${timestamp}`;
+    const clientInvoiceNumber = `INV-CLI-${timestamp}`;
+
+    // Calculate amounts for CONSULTANT invoice (purchase)
+    const consultantSubtotal = contract.purchase_price * daysWorked;
+    const consultantVAT = consultantSubtotal * 0.2;
+    const consultantTotal = consultantSubtotal + consultantVAT;
+
+    // Calculate amounts for CLIENT invoice (sell)
+    const clientSubtotal = contract.sell_price * daysWorked;
+    const clientVAT = clientSubtotal * 0.2;
+    const clientTotal = clientSubtotal + clientVAT;
+
+    // Create BOTH invoices
+    await pool.query(`
+      INSERT INTO invoices 
+      (invoice_number, contract_id, invoice_type, invoice_date, period_from, period_to,
+       days_worked, daily_rate, subtotal, vat_amount, total_amount, company_id, created_by, created_at)
+      VALUES 
+      ($1, $2, 'consultant', CURRENT_DATE, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW()),
+      ($12, $2, 'client', CURRENT_DATE, $3, $4, $5, $13, $14, $15, $16, $10, $11, NOW())
+    `, [
+      consultantInvoiceNumber, contract.id, periodFrom, periodTo, daysWorked,
+      contract.purchase_price, consultantSubtotal, consultantVAT, consultantTotal, req.companyId, req.user.id,
+      clientInvoiceNumber, contract.sell_price, clientSubtotal, clientVAT, clientTotal
+    ]);
+
+    // Mark timesheet as processed
+    await pool.query(
+      'UPDATE automation_logs SET invoice_generated = true, processed = true WHERE id = $1',
+      [id]
+    );
+
+    res.json({ message: 'Invoices generated successfully from timesheet', daysUsed: daysWorked });
+
+  } catch (error) {
+    console.error('Generate invoice from timesheet error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all invoices
+app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res) => {
 // Get all invoices
 app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
