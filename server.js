@@ -779,6 +779,44 @@ app.get('/api/automation-logs', authenticateToken, async (req, res) => {
   }
 });
 
+// Update invoice number
+app.put('/api/invoices/:id/number', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { invoiceNumber } = req.body;
+
+    if (!invoiceNumber || !invoiceNumber.trim()) {
+      return res.status(400).json({ error: 'Invoice number is required' });
+    }
+
+    // Check if invoice belongs to user's company
+    const checkResult = await pool.query(
+      'SELECT id FROM invoices WHERE id = $1 AND company_id = $2',
+      [id, req.companyId]
+    );
+
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    // Update invoice number
+    const result = await pool.query(
+      'UPDATE invoices SET invoice_number = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+      [invoiceNumber.trim(), id]
+    );
+
+    res.json({ message: 'Invoice number updated successfully', invoice: result.rows[0] });
+  } catch (error) {
+    console.error('Update invoice number error:', error);
+    
+    if (error.code === '23505') {
+      res.status(400).json({ error: 'Invoice number already exists' });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
