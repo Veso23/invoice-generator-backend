@@ -574,6 +574,7 @@ app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAc
   }
 });
 // Generate invoice from timesheet using approved days
+// Generate invoice from timesheet using approved days
 app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
@@ -620,11 +621,30 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       return res.status(400).json({ error: 'Invalid days worked in timesheet' });
     }
 
-    // Get period from timesheet month
-    const monthStr = timesheet.month || new Date().toISOString().slice(0, 7);
-    const [year, month] = monthStr.split('-');
-    const periodFrom = new Date(year, month - 1, 1);
-    const periodTo = new Date(year, month, 0); // Last day of month
+    // ✅ FIX: Parse month from timesheet (handle both formats)
+    const monthStr = timesheet.month || '';
+    let year, month;
+
+    // Check if format is "YYYY-MM" or just month name
+    if (monthStr.includes('-')) {
+      // Format: "2025-06"
+      [year, month] = monthStr.split('-');
+    } else {
+      // Format: "June" or "April" - convert to number
+      const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
+                          'July', 'August', 'September', 'October', 'November', 'December'];
+      const monthIndex = monthNames.findIndex(m => m.toLowerCase() === monthStr.toLowerCase());
+      
+      if (monthIndex === -1) {
+        return res.status(400).json({ error: 'Invalid month format in timesheet' });
+      }
+      
+      year = new Date().getFullYear().toString(); // Use current year
+      month = (monthIndex + 1).toString(); // Month is 1-indexed
+    }
+
+    const periodFrom = new Date(parseInt(year), parseInt(month) - 1, 1);
+    const periodTo = new Date(parseInt(year), parseInt(month), 0); // Last day of month
 
     // Generate invoice numbers
     const timestamp = Date.now();
@@ -661,7 +681,11 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       [id]
     );
 
-    res.json({ message: 'Invoices generated successfully from timesheet', daysUsed: daysWorked });
+    res.json({ 
+      message: 'Invoices generated successfully from timesheet', 
+      daysUsed: daysWorked,
+      period: `${periodFrom.toISOString().slice(0, 10)} to ${periodTo.toISOString().slice(0, 10)}`
+    });
 
   } catch (error) {
     console.error('Generate invoice from timesheet error:', error);
