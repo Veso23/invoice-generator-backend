@@ -377,14 +377,15 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
       return res.status(400).json({ error: 'All contract fields are required' });
     }
 
-    // Get consultant and client data
+    // Verify consultant exists
     const consultantResult = await pool.query(
-      'SELECT consultant_contract_id FROM consultants WHERE id = $1 AND company_id = $2', 
+      'SELECT id FROM consultants WHERE id = $1 AND company_id = $2', 
       [consultantId, req.companyId]
     );
     
+    // Verify client exists
     const clientResult = await pool.query(
-      'SELECT client_contract_id FROM clients WHERE id = $1 AND company_id = $2', 
+      'SELECT id FROM clients WHERE id = $1 AND company_id = $2', 
       [clientId, req.companyId]
     );
 
@@ -396,13 +397,11 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
       return res.status(400).json({ error: 'Client not found' });
     }
 
-    // ✅ FIX: Use NULL instead of empty string
-    const consultantContractId = consultantResult.rows[0].consultant_contract_id || null;
-    const clientContractId = clientResult.rows[0].client_contract_id || null;
-
-    // Auto-generate unique contract number
+    // ✅ ALWAYS generate unique IDs for THIS contract
     const timestamp = Date.now();
     const contractNumber = `CNT-${timestamp}`;
+    const consultantContractId = `CONS-${timestamp}`;
+    const clientContractId = `CLI-${timestamp}`;
 
     const result = await pool.query(`
       INSERT INTO contracts 
@@ -416,17 +415,10 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Create contract error:', error);
-    
-    if (error.code === '23505') {
-      res.status(400).json({ 
-        error: `Duplicate entry: ${error.constraint || 'unknown constraint'}`,
-        detail: error.detail
-      });
-    } else {
-      res.status(500).json({ error: `Internal server error: ${error.message}` });
-    }
+    res.status(500).json({ error: error.message });
   }
 });
+
 
 // Match timesheet to consultant
 app.put('/api/timesheets/:id/match', authenticateToken, checkCompanyAccess, async (req, res) => {
