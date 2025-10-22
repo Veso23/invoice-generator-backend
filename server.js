@@ -319,15 +319,32 @@ app.post('/api/clients', authenticateToken, checkCompanyAccess, async (req, res)
 app.get('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT c.*, 
-             cons.company_name as consultant_company_name,
-             cons.first_name as consultant_first_name,
-             cons.last_name as consultant_last_name,
-             cons.company_vat as consultant_company_vat,
-             cli.company_name as client_company_name,
-             cli.first_name as client_first_name,
-             cli.last_name as client_last_name,
-             cli.company_vat as client_company_vat
+      SELECT 
+        c.id,
+        c.uuid,
+        c.consultant_id,
+        c.client_id,
+        c.contract_number,
+        c.from_date,
+        c.to_date,
+        c.purchase_price,
+        c.sell_price,
+        c.currency,
+        c.status,
+        c.notes,
+        c.company_id,
+        c.created_at,
+        c.updated_at,
+        cons.consultant_contract_id,  -- ✅ FROM CONSULTANTS TABLE
+        cli.client_contract_id,       -- ✅ FROM CLIENTS TABLE
+        cons.company_name as consultant_company_name,
+        cons.first_name as consultant_first_name,
+        cons.last_name as consultant_last_name,
+        cons.company_vat as consultant_company_vat,
+        cli.company_name as client_company_name,
+        cli.first_name as client_first_name,
+        cli.last_name as client_last_name,
+        cli.company_vat as client_company_vat
       FROM contracts c
       JOIN consultants cons ON c.consultant_id = cons.id
       JOIN clients cli ON c.client_id = cli.id
