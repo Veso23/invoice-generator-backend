@@ -534,11 +534,11 @@ app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAc
 
     // Calculate amounts
     const consultantSubtotal = contract.purchase_price * days;
-    const consultantVAT = consultantSubtotal * 0.2;
+    const consultantVAT = consultantSubtotal * 0.21;
     const consultantTotal = consultantSubtotal + consultantVAT;
 
     const clientSubtotal = contract.sell_price * days;
-    const clientVAT = clientSubtotal * 0.2;
+    const clientVAT = clientSubtotal * 0.21;
     const clientTotal = clientSubtotal + clientVAT;
 
     // Create consultant invoice
