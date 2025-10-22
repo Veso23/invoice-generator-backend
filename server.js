@@ -369,37 +369,17 @@ app.get('/api/timesheets', authenticateToken, checkCompanyAccess, async (req, re
 app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const {
+      contractNumber,  // ← FROM USER INPUT
       consultantId, clientId, fromDate, toDate,
       purchasePrice, sellPrice
     } = req.body;
 
-    if (!consultantId || !clientId || !fromDate || !toDate || !purchasePrice || !sellPrice) {
-      return res.status(400).json({ error: 'All contract fields are required' });
+    if (!contractNumber || !consultantId || !clientId || !fromDate || !toDate || !purchasePrice || !sellPrice) {
+      return res.status(400).json({ error: 'All fields including contract number are required' });
     }
 
-    // Verify consultant exists
-    const consultantResult = await pool.query(
-      'SELECT id FROM consultants WHERE id = $1 AND company_id = $2', 
-      [consultantId, req.companyId]
-    );
-    
-    // Verify client exists
-    const clientResult = await pool.query(
-      'SELECT id FROM clients WHERE id = $1 AND company_id = $2', 
-      [clientId, req.companyId]
-    );
-
-    if (consultantResult.rows.length === 0) {
-      return res.status(400).json({ error: 'Consultant not found' });
-    }
-
-    if (clientResult.rows.length === 0) {
-      return res.status(400).json({ error: 'Client not found' });
-    }
-
-    // ✅ ALWAYS generate unique IDs for THIS contract
+    // Generate internal unique IDs (these can be auto-generated for database constraints)
     const timestamp = Date.now();
-    const contractNumber = `CNT-${timestamp}`;
     const consultantContractId = `CONS-${timestamp}`;
     const clientContractId = `CLI-${timestamp}`;
 
@@ -409,13 +389,28 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
        consultant_contract_id, client_contract_id, company_id, created_at)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW()) 
       RETURNING *
-    `, [contractNumber, consultantId, clientId, fromDate, toDate, purchasePrice, sellPrice, 
-        consultantContractId, clientContractId, req.companyId]);
+    `, [
+      contractNumber,  // ← USER'S NUMBER (e.g., "CNT-2025-001")
+      consultantId, 
+      clientId, 
+      fromDate, 
+      toDate, 
+      purchasePrice, 
+      sellPrice, 
+      consultantContractId,  // Internal only
+      clientContractId,      // Internal only
+      req.companyId
+    ]);
 
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Create contract error:', error);
-    res.status(500).json({ error: error.message });
+    
+    if (error.code === '23505' && error.constraint === 'contracts_contract_number_key') {
+      res.status(400).json({ error: 'Contract number already exists. Please use a different number.' });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 
