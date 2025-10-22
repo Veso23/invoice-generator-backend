@@ -574,7 +574,6 @@ app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAc
   }
 });
 // Generate invoice from timesheet using approved days
-// Generate invoice from timesheet using approved days
 app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
@@ -621,16 +620,13 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       return res.status(400).json({ error: 'Invalid days worked in timesheet' });
     }
 
-    // ✅ FIX: Parse month from timesheet (handle both formats)
+    // Parse month from timesheet (handle both formats)
     const monthStr = timesheet.month || '';
     let year, month;
 
-    // Check if format is "YYYY-MM" or just month name
     if (monthStr.includes('-')) {
-      // Format: "2025-06"
       [year, month] = monthStr.split('-');
     } else {
-      // Format: "June" or "April" - convert to number
       const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
                           'July', 'August', 'September', 'October', 'November', 'December'];
       const monthIndex = monthNames.findIndex(m => m.toLowerCase() === monthStr.toLowerCase());
@@ -639,17 +635,37 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
         return res.status(400).json({ error: 'Invalid month format in timesheet' });
       }
       
-      year = new Date().getFullYear().toString(); // Use current year
-      month = (monthIndex + 1).toString(); // Month is 1-indexed
+      year = new Date().getFullYear().toString();
+      month = (monthIndex + 1).toString();
     }
 
     const periodFrom = new Date(parseInt(year), parseInt(month) - 1, 1);
-    const periodTo = new Date(parseInt(year), parseInt(month), 0); // Last day of month
+    const periodTo = new Date(parseInt(year), parseInt(month), 0);
 
-    // Generate invoice numbers
-    const timestamp = Date.now();
-    const consultantInvoiceNumber = `INV-CONS-${timestamp}`;
-    const clientInvoiceNumber = `INV-CLI-${timestamp}`;
+    // ✅ GENERATE CONSULTANT INVOICE NUMBER (per consultant)
+    // Format: INV-ConsultantName-001, INV-ConsultantName-002, etc.
+    const consultantName = `${consultant.first_name}${consultant.last_name}`.replace(/\s+/g, '');
+    const consultantInvoiceCountResult = await pool.query(`
+      SELECT COUNT(*) as count 
+      FROM invoices i
+      JOIN contracts c ON i.contract_id = c.id
+      WHERE c.consultant_id = $1 AND i.invoice_type = 'consultant'
+    `, [consultant.id]);
+    const consultantInvoiceCount = parseInt(consultantInvoiceCountResult.rows[0].count) + 1;
+    const consultantInvoiceNumber = `INV-${consultantName}-${consultantInvoiceCount.toString().padStart(3, '0')}`;
+
+    // ✅ GENERATE CLIENT INVOICE NUMBER (company-wide per year)
+    // Format: INV-2025-001, INV-2025-002, etc.
+    const currentYear = new Date().getFullYear();
+    const clientInvoiceCountResult = await pool.query(`
+      SELECT COUNT(*) as count 
+      FROM invoices
+      WHERE invoice_type = 'client' 
+        AND company_id = $1
+        AND EXTRACT(YEAR FROM invoice_date) = $2
+    `, [req.companyId, currentYear]);
+    const clientInvoiceCount = parseInt(clientInvoiceCountResult.rows[0].count) + 1;
+    const clientInvoiceNumber = `INV-${currentYear}-${clientInvoiceCount.toString().padStart(3, '0')}`;
 
     // Calculate amounts for CONSULTANT invoice (purchase)
     const consultantSubtotal = contract.purchase_price * daysWorked;
@@ -683,8 +699,9 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
 
     res.json({ 
       message: 'Invoices generated successfully from timesheet', 
-      daysUsed: daysWorked,
-      period: `${periodFrom.toISOString().slice(0, 10)} to ${periodTo.toISOString().slice(0, 10)}`
+      consultantInvoice: consultantInvoiceNumber,
+      clientInvoice: clientInvoiceNumber,
+      daysUsed: daysWorked
     });
 
   } catch (error) {
