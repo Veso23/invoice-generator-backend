@@ -369,15 +369,15 @@ app.get('/api/timesheets', authenticateToken, checkCompanyAccess, async (req, re
 app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const {
-      contractNumber, consultantId, clientId, fromDate, toDate,
+      consultantId, clientId, fromDate, toDate,
       purchasePrice, sellPrice
     } = req.body;
 
-    if (!contractNumber || !consultantId || !clientId || !fromDate || !toDate || !purchasePrice || !sellPrice) {
-      return res.status(400).json({ error: 'All contract fields including contract number are required' });
+    if (!consultantId || !clientId || !fromDate || !toDate || !purchasePrice || !sellPrice) {
+      return res.status(400).json({ error: 'All contract fields are required' });
     }
 
-    // Get consultant and client contract IDs from their records
+    // Get consultant and client data
     const consultantResult = await pool.query(
       'SELECT consultant_contract_id FROM consultants WHERE id = $1 AND company_id = $2', 
       [consultantId, req.companyId]
@@ -396,9 +396,13 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
       return res.status(400).json({ error: 'Client not found' });
     }
 
-    // Use empty string if contract IDs are null
-    const consultantContractId = consultantResult.rows[0].consultant_contract_id || '';
-    const clientContractId = clientResult.rows[0].client_contract_id || '';
+    // ✅ FIX: Use NULL instead of empty string
+    const consultantContractId = consultantResult.rows[0].consultant_contract_id || null;
+    const clientContractId = clientResult.rows[0].client_contract_id || null;
+
+    // Auto-generate unique contract number
+    const timestamp = Date.now();
+    const contractNumber = `CNT-${timestamp}`;
 
     const result = await pool.query(`
       INSERT INTO contracts 
@@ -412,8 +416,12 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('Create contract error:', error);
+    
     if (error.code === '23505') {
-      res.status(400).json({ error: 'Contract number already exists' });
+      res.status(400).json({ 
+        error: `Duplicate entry: ${error.constraint || 'unknown constraint'}`,
+        detail: error.detail
+      });
     } else {
       res.status(500).json({ error: `Internal server error: ${error.message}` });
     }
