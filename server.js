@@ -653,12 +653,12 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
 
     // Calculate amounts for CONSULTANT invoice (purchase)
     const consultantSubtotal = contract.purchase_price * daysWorked;
-    const consultantVAT = consultantSubtotal * 0.2;
+    const consultantVAT = consultantSubtotal * 0.21;
     const consultantTotal = consultantSubtotal + consultantVAT;
 
     // Calculate amounts for CLIENT invoice (sell)
     const clientSubtotal = contract.sell_price * daysWorked;
-    const clientVAT = clientSubtotal * 0.2;
+    const clientVAT = clientSubtotal * 0.21;
     const clientTotal = clientSubtotal + clientVAT;
 
     // Create BOTH invoices
