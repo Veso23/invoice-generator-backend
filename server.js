@@ -856,7 +856,7 @@ app.get('/api/company/settings', authenticateToken, checkCompanyAccess, async (r
 });
 
 // Update company settings
-app.put('/api/company/settings', authenticateToken, async (req, res) => {
+app.put('/api/company/settings', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { name, timesheet_deadline_day, company_vat, company_email } = req.body;
     
