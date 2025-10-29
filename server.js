@@ -837,7 +837,7 @@ app.use((err, req, res, next) => {
 });
 
 // Get company settings
-app.get('/api/company/settings', authenticateToken, async (req, res) => {
+app.get('/api/company/settings', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT id, name, timesheet_deadline_day, company_vat, company_email FROM companies WHERE id = $1',
