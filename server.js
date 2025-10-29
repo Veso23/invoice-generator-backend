@@ -748,14 +748,26 @@ app.post('/api/n8n/automation-data', async (req, res) => {
       hoursDiff, daysDiff, hoursStatus, daysStatus, status
     } = req.body;
 
+    // 🔍 Find company_id by matching consultant email
+    let companyId = null;
+    if (senderEmail) {
+      const consultantResult = await pool.query(
+        'SELECT company_id FROM consultants WHERE email = $1 LIMIT 1',
+        [senderEmail]
+      );
+      if (consultantResult.rows.length > 0) {
+        companyId = consultantResult.rows[0].company_id;
+      }
+    }
+
     const result = await pool.query(`
       INSERT INTO automation_logs 
       (timestamp, sender_email, person_name, month, email_hours, email_days,
-       pdf_hours, pdf_days, hours_diff, days_diff, hours_status, days_status, status, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+       pdf_hours, pdf_days, hours_diff, days_diff, hours_status, days_status, status, company_id, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
       RETURNING *
     `, [timestamp, senderEmail, personName, month, emailHours, emailDays,
-        pdfHours, pdfDays, hoursDiff, daysDiff, hoursStatus, daysStatus, status]);
+        pdfHours, pdfDays, hoursDiff, daysDiff, hoursStatus, daysStatus, status, companyId]);
 
     res.status(201).json(result.rows[0]);
   } catch (error) {
@@ -915,10 +927,10 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
     
     // Get all timesheets for the month we're checking
     const timesheetsResult = await pool.query(`
-      SELECT sender_email, month, pdf_days, email_days, created_at
-      FROM automation_logs
-      WHERE company_id = $1
-    `, [req.companyId]);
+  SELECT sender_email, month, pdf_days, email_days, created_at
+  FROM automation_logs
+  WHERE company_id = $1 OR company_id IS NULL
+`, [req.companyId]);
     
     // Build status for each consultant
     const consultantStatuses = consultantsResult.rows.map(consultant => {
