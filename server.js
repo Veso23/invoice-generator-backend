@@ -21,10 +21,11 @@ app.use(morgan('combined'));
 
 // CORS configuration - Allow all origins for now
 app.use(cors({
-  origin: true, // Allow all origins during development
+  origin: ['https://invoice-generator-frontend-inky.vercel.app', 'http://localhost:3000'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  optionsSuccessStatus: 200
 }));
 
 app.use(express.json({ limit: '10mb' }));
