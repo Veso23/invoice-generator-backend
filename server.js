@@ -867,7 +867,7 @@ app.put('/api/company/settings', authenticateToken, async (req, res) => {
 });
 
 // Get timesheet status for all active consultants
-app.get('/api/timesheets/status', authenticateToken, async (req, res) => {
+app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     // Get company deadline setting
     const companyResult = await pool.query(
