@@ -823,6 +823,151 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
+// Get company settings
+app.get('/api/company/settings', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT id, name, timesheet_deadline_day, company_vat, company_email FROM companies WHERE id = $1',
+      [req.companyId]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Get company settings error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update company settings
+app.put('/api/company/settings', authenticateToken, async (req, res) => {
+  try {
+    const { name, timesheet_deadline_day, company_vat, company_email } = req.body;
+    
+    const result = await pool.query(
+      `UPDATE companies 
+       SET name = $1, 
+           timesheet_deadline_day = $2, 
+           company_vat = $3, 
+           company_email = $4,
+           updated_at = NOW()
+       WHERE id = $5
+       RETURNING *`,
+      [name, timesheet_deadline_day, company_vat, company_email, req.companyId]
+    );
+    
+    res.json({ message: 'Settings updated successfully', company: result.rows[0] });
+  } catch (error) {
+    console.error('Update company settings error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get timesheet status for all active consultants
+app.get('/api/timesheets/status', authenticateToken, async (req, res) => {
+  try {
+    // Get company deadline setting
+    const companyResult = await pool.query(
+      'SELECT timesheet_deadline_day FROM companies WHERE id = $1',
+      [req.companyId]
+    );
+    const deadlineDay = companyResult.rows[0]?.timesheet_deadline_day || 15;
+    
+    // Get all consultants with active contracts
+    const consultantsResult = await pool.query(`
+      SELECT DISTINCT
+        cons.id,
+        cons.first_name,
+        cons.last_name,
+        cons.company_name,
+        cons.email
+      FROM consultants cons
+      JOIN contracts c ON c.consultant_id = cons.id
+      WHERE c.status = 'active' AND cons.company_id = $1
+      ORDER BY cons.first_name, cons.last_name
+    `, [req.companyId]);
+    
+    // Calculate status for each consultant
+    const now = new Date();
+    const currentMonth = now.getMonth(); // 0-11
+    const currentYear = now.getFullYear();
+    
+    // We're checking for LAST month's timesheet
+    let checkMonth = currentMonth - 1;
+    let checkYear = currentYear;
+    if (checkMonth < 0) {
+      checkMonth = 11; // December
+      checkYear -= 1;
+    }
+    
+    // Calculate deadline date (e.g., October 15 for September timesheets)
+    const deadlineMonth = currentMonth;
+    const deadlineYear = currentYear;
+    const deadline = new Date(deadlineYear, deadlineMonth, deadlineDay);
+    
+    // Month names for display
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                       'July', 'August', 'September', 'October', 'November', 'December'];
+    const checkingMonthName = monthNames[checkMonth];
+    
+    // Get all timesheets for the month we're checking
+    const timesheetsResult = await pool.query(`
+      SELECT sender_email, month, pdf_days, email_days, created_at
+      FROM automation_logs
+      WHERE company_id = $1
+    `, [req.companyId]);
+    
+    // Build status for each consultant
+    const consultantStatuses = consultantsResult.rows.map(consultant => {
+      // Find timesheet for this consultant for the checking month
+      const timesheet = timesheetsResult.rows.find(ts => {
+        if (ts.sender_email !== consultant.email) return false;
+        
+        // Check if month matches
+        const tsMonth = ts.month?.toLowerCase();
+        return tsMonth === checkingMonthName.toLowerCase();
+      });
+      
+      let status, statusText;
+      if (timesheet) {
+        status = 'received'; // GREEN
+        statusText = 'Received';
+      } else if (now < deadline) {
+        status = 'waiting'; // YELLOW
+        statusText = 'Waiting';
+      } else {
+        status = 'overdue'; // RED
+        statusText = 'Overdue';
+      }
+      
+      return {
+        ...consultant,
+        checking_month: checkingMonthName,
+        checking_year: checkYear,
+        status,
+        status_text: statusText,
+        timesheet_id: timesheet?.id || null,
+        days_worked: timesheet?.pdf_days || timesheet?.email_days || null,
+        deadline_date: deadline.toISOString().split('T')[0]
+      };
+    });
+    
+    res.json({
+      deadline_day: deadlineDay,
+      checking_month: checkingMonthName,
+      checking_year: checkYear,
+      consultants: consultantStatuses
+    });
+    
+  } catch (error) {
+    console.error('Get timesheet status error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 404 handler
 app.use('*', (req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
