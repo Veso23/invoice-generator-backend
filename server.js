@@ -503,20 +503,22 @@ app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAc
 
     // Get contract with consultant and client details
     const contractResult = await pool.query(`
-      SELECT c.*, 
-             cons.first_name as consultant_first_name, cons.last_name as consultant_last_name,
-             cons.company_name as consultant_company, cons.company_address as consultant_address,
-             cons.company_vat as consultant_vat, cons.iban as consultant_iban, cons.swift as consultant_swift,
-             cli.first_name as client_first_name, cli.last_name as client_last_name,
-             cli.company_name as client_company, cli.company_address as client_address,
-             cli.company_vat as client_vat, cli.iban as client_iban, cli.swift as client_swift,
-             comp.name as company_name, comp.address as company_address, comp.vat as company_vat
-      FROM contracts c
-      JOIN consultants cons ON c.consultant_id = cons.id
-      JOIN clients cli ON c.client_id = cli.id
-      JOIN companies comp ON c.company_id = comp.id
-      WHERE c.id = $1 AND c.company_id = $2
-    `, [contractId, req.companyId]);
+const contractResult = await pool.query(`
+  SELECT c.*, 
+         cons.first_name as consultant_first_name, cons.last_name as consultant_last_name,
+         cons.company_name as consultant_company, cons.company_address as consultant_address,
+         cons.company_vat as consultant_vat, cons.iban as consultant_iban, cons.swift as consultant_swift,
+         cli.first_name as client_first_name, cli.last_name as client_last_name,
+         cli.company_name as client_company, cli.company_address as client_address,
+         cli.company_vat as client_vat, cli.iban as client_iban, cli.swift as client_swift,
+         comp.name as company_name, comp.address as company_address, comp.vat as company_vat,
+         comp.default_vat_rate  -- ← ADD THIS LINE
+  FROM contracts c
+  JOIN consultants cons ON c.consultant_id = cons.id
+  JOIN clients cli ON c.client_id = cli.id
+  JOIN companies comp ON c.company_id = comp.id
+  WHERE c.id = $1 AND c.company_id = $2
+`, [contractId, req.companyId]);
 
     if (contractResult.rows.length === 0) {
       return res.status(404).json({ error: 'Contract not found' });
@@ -533,34 +535,37 @@ app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAc
     const consultantInvoiceNumber = `INV-CONS-${Date.now()}`;
     const clientInvoiceNumber = `INV-CLI-${Date.now()}`;
 
-    // Calculate amounts
-    const consultantSubtotal = contract.purchase_price * days;
-    const consultantVAT = consultantSubtotal * 0.21;
-    const consultantTotal = consultantSubtotal + consultantVAT;
+// Calculate amounts using company's default VAT rate
+const vatRate = contract.default_vat_rate || 21.00;  // ← ADD THIS
+const vatDecimal = vatRate / 100;
 
-    const clientSubtotal = contract.sell_price * days;
-    const clientVAT = clientSubtotal * 0.21;
-    const clientTotal = clientSubtotal + clientVAT;
+const consultantSubtotal = contract.purchase_price * days;
+const consultantVAT = consultantSubtotal * vatDecimal;  // ← CHANGED
+const consultantTotal = consultantSubtotal + consultantVAT;
 
-    // Create consultant invoice
-    const consultantInvoiceResult = await pool.query(`
-      INSERT INTO invoices 
-      (invoice_number, contract_id, invoice_type, invoice_date, period_from, period_to,
-       days_worked, daily_rate, subtotal, vat_amount, total_amount, company_id, created_by, created_at)
-      VALUES ($1, $2, 'consultant', CURRENT_DATE, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
-      RETURNING *
-    `, [consultantInvoiceNumber, contractId, contract.from_date, contract.to_date,
-        days, contract.purchase_price, consultantSubtotal, consultantVAT, consultantTotal, req.companyId, req.user.id]);
+const clientSubtotal = contract.sell_price * days;
+const clientVAT = clientSubtotal * vatDecimal;  // ← CHANGED
+const clientTotal = clientSubtotal + clientVAT;
 
-    // Create client invoice
-    const clientInvoiceResult = await pool.query(`
-      INSERT INTO invoices 
-      (invoice_number, contract_id, invoice_type, invoice_date, period_from, period_to,
-       days_worked, daily_rate, subtotal, vat_amount, total_amount, company_id, created_by, created_at)
-      VALUES ($1, $2, 'client', CURRENT_DATE, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
-      RETURNING *
-    `, [clientInvoiceNumber, contractId, contract.from_date, contract.to_date,
-        days, contract.sell_price, clientSubtotal, clientVAT, clientTotal, req.companyId, req.user.id]);
+// Create consultant invoice
+const consultantInvoiceResult = await pool.query(`
+  INSERT INTO invoices 
+  (invoice_number, contract_id, invoice_type, invoice_date, period_from, period_to,
+   days_worked, daily_rate, subtotal, vat_rate, vat_amount, total_amount, company_id, created_by, created_at)
+  VALUES ($1, $2, 'consultant', CURRENT_DATE, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+  RETURNING *
+`, [consultantInvoiceNumber, contractId, contract.from_date, contract.to_date,
+    days, contract.purchase_price, consultantSubtotal, vatRate, consultantVAT, consultantTotal, req.companyId, req.user.id]);
+
+// Create client invoice
+const clientInvoiceResult = await pool.query(`
+  INSERT INTO invoices 
+  (invoice_number, contract_id, invoice_type, invoice_date, period_from, period_to,
+   days_worked, daily_rate, subtotal, vat_rate, vat_amount, total_amount, company_id, created_by, created_at)
+  VALUES ($1, $2, 'client', CURRENT_DATE, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+  RETURNING *
+`, [clientInvoiceNumber, contractId, contract.from_date, contract.to_date,
+    days, contract.sell_price, clientSubtotal, vatRate, clientVAT, clientTotal, req.companyId, req.user.id]);
 
     res.json({
       consultantInvoice: consultantInvoiceResult.rows[0],
@@ -668,29 +673,37 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     const clientInvoiceCount = parseInt(clientInvoiceCountResult.rows[0].count) + 1;
     const clientInvoiceNumber = `INV-${currentYear}-${clientInvoiceCount.toString().padStart(3, '0')}`;
 
-    // Calculate amounts for CONSULTANT invoice (purchase)
-    const consultantSubtotal = contract.purchase_price * daysWorked;
-    const consultantVAT = consultantSubtotal * 0.21;
-    const consultantTotal = consultantSubtotal + consultantVAT;
+// Get company default VAT rate
+const companyResult = await pool.query(
+  'SELECT default_vat_rate FROM companies WHERE id = $1',
+  [req.companyId]
+);
+const vatRate = companyResult.rows[0]?.default_vat_rate || 21.00;
+const vatDecimal = vatRate / 100;
 
-    // Calculate amounts for CLIENT invoice (sell)
-    const clientSubtotal = contract.sell_price * daysWorked;
-    const clientVAT = clientSubtotal * 0.21;
-    const clientTotal = clientSubtotal + clientVAT;
+// Calculate amounts for CONSULTANT invoice (purchase)
+const consultantSubtotal = contract.purchase_price * daysWorked;
+const consultantVAT = consultantSubtotal * vatDecimal;  // ← CHANGED
+const consultantTotal = consultantSubtotal + consultantVAT;
 
-    // Create BOTH invoices
-    await pool.query(`
-      INSERT INTO invoices 
-      (invoice_number, contract_id, invoice_type, invoice_date, period_from, period_to,
-       days_worked, daily_rate, subtotal, vat_amount, total_amount, company_id, created_by, created_at)
-      VALUES 
-      ($1, $2, 'consultant', CURRENT_DATE, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW()),
-      ($12, $2, 'client', CURRENT_DATE, $3, $4, $5, $13, $14, $15, $16, $10, $11, NOW())
-    `, [
-      consultantInvoiceNumber, contract.id, periodFrom, periodTo, daysWorked,
-      contract.purchase_price, consultantSubtotal, consultantVAT, consultantTotal, req.companyId, req.user.id,
-      clientInvoiceNumber, contract.sell_price, clientSubtotal, clientVAT, clientTotal
-    ]);
+// Calculate amounts for CLIENT invoice (sell)
+const clientSubtotal = contract.sell_price * daysWorked;
+const clientVAT = clientSubtotal * vatDecimal;  // ← CHANGED
+const clientTotal = clientSubtotal + clientVAT;
+
+// Create BOTH invoices
+await pool.query(`
+  INSERT INTO invoices 
+  (invoice_number, contract_id, invoice_type, invoice_date, period_from, period_to,
+   days_worked, daily_rate, subtotal, vat_rate, vat_amount, total_amount, company_id, created_by, created_at)
+  VALUES 
+  ($1, $2, 'consultant', CURRENT_DATE, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW()),
+  ($13, $2, 'client', CURRENT_DATE, $3, $4, $5, $14, $15, $8, $16, $17, $11, $12, NOW())
+`, [
+  consultantInvoiceNumber, contract.id, periodFrom, periodTo, daysWorked,
+  contract.purchase_price, consultantSubtotal, vatRate, consultantVAT, consultantTotal, req.companyId, req.user.id,
+  clientInvoiceNumber, contract.sell_price, clientSubtotal, clientVAT, clientTotal
+]);
 
     // Mark timesheet as processed
     await pool.query(
