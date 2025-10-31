@@ -982,6 +982,98 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
   }
 });
 
+// Update invoice VAT rate
+app.put('/api/invoices/:id/vat', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { vatRate } = req.body;
+    
+    // Get current invoice
+    const invoiceResult = await pool.query(
+      'SELECT * FROM invoices WHERE id = $1 AND company_id = $2',
+      [id, req.companyId]
+    );
+    
+    if (invoiceResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+    
+    const invoice = invoiceResult.rows[0];
+    const subtotal = parseFloat(invoice.subtotal);
+    const vatEnabled = invoice.vat_enabled !== false;
+    
+    // Recalculate amounts
+    const newVatAmount = vatEnabled ? (subtotal * vatRate / 100) : 0;
+    const newTotal = subtotal + newVatAmount;
+    
+    // Update invoice
+    const result = await pool.query(
+      `UPDATE invoices 
+       SET vat_rate = $1, 
+           vat_amount = $2, 
+           total_amount = $3,
+           updated_at = NOW()
+       WHERE id = $4 AND company_id = $5
+       RETURNING *`,
+      [vatRate, newVatAmount, newTotal, id, req.companyId]
+    );
+    
+    res.json({ 
+      message: 'VAT rate updated successfully', 
+      invoice: result.rows[0] 
+    });
+  } catch (error) {
+    console.error('Update VAT rate error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Toggle VAT enabled/disabled
+app.put('/api/invoices/:id/vat-toggle', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { vatEnabled } = req.body;
+    
+    // Get current invoice
+    const invoiceResult = await pool.query(
+      'SELECT * FROM invoices WHERE id = $1 AND company_id = $2',
+      [id, req.companyId]
+    );
+    
+    if (invoiceResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+    
+    const invoice = invoiceResult.rows[0];
+    const subtotal = parseFloat(invoice.subtotal);
+    const vatRate = parseFloat(invoice.vat_rate);
+    
+    // Recalculate amounts
+    const newVatAmount = vatEnabled ? (subtotal * vatRate / 100) : 0;
+    const newTotal = subtotal + newVatAmount;
+    
+    // Update invoice
+    const result = await pool.query(
+      `UPDATE invoices 
+       SET vat_enabled = $1,
+           vat_amount = $2, 
+           total_amount = $3,
+           updated_at = NOW()
+       WHERE id = $4 AND company_id = $5
+       RETURNING *`,
+      [vatEnabled, newVatAmount, newTotal, id, req.companyId]
+    );
+    
+    res.json({ 
+      message: `VAT ${vatEnabled ? 'enabled' : 'disabled'} successfully`, 
+      invoice: result.rows[0] 
+    });
+  } catch (error) {
+    console.error('Toggle VAT error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 404 handler
 app.use('*', (req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
