@@ -840,7 +840,7 @@ app.use((err, req, res, next) => {
 app.get('/api/company/settings', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT id, name, timesheet_deadline_day, company_vat, company_email FROM companies WHERE id = $1',
+      'SELECT id, name, timesheet_deadline_day, company_vat, company_email, default_vat_rate FROM companies WHERE id = $1',
       [req.companyId]
     );
     
@@ -858,7 +858,7 @@ app.get('/api/company/settings', authenticateToken, checkCompanyAccess, async (r
 // Update company settings
 app.put('/api/company/settings', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
-    const { name, timesheet_deadline_day, company_vat, company_email } = req.body;
+    const { name, timesheet_deadline_day, company_vat, company_email, default_vat_rate } = req.body;
     
     const result = await pool.query(
       `UPDATE companies 
@@ -866,10 +866,11 @@ app.put('/api/company/settings', authenticateToken, checkCompanyAccess, async (r
            timesheet_deadline_day = $2, 
            company_vat = $3, 
            company_email = $4,
+           default_vat_rate = $5,
            updated_at = NOW()
-       WHERE id = $5
+       WHERE id = $6
        RETURNING *`,
-      [name, timesheet_deadline_day, company_vat, company_email, req.companyId]
+      [name, timesheet_deadline_day, company_vat, company_email, default_vat_rate, req.companyId]
     );
     
     res.json({ message: 'Settings updated successfully', company: result.rows[0] });
