@@ -502,7 +502,6 @@ app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAc
     const { contractId } = req.params;
 
     // Get contract with consultant and client details
-    const contractResult = await pool.query(`
 const contractResult = await pool.query(`
   SELECT c.*, 
          cons.first_name as consultant_first_name, cons.last_name as consultant_last_name,
