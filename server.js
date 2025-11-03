@@ -852,7 +852,10 @@ app.use((err, req, res, next) => {
 app.get('/api/company/settings', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT id, name, timesheet_deadline_day, company_vat, company_email, default_vat_rate FROM companies WHERE id = $1',
+      `SELECT id, name, address, representative_name, timesheet_deadline_day, 
+              company_vat, company_email, default_vat_rate, 
+              bank_name, bank_iban, bank_swift, bank_address 
+       FROM companies WHERE id = $1`,
       [req.companyId]
     );
     
@@ -870,19 +873,31 @@ app.get('/api/company/settings', authenticateToken, checkCompanyAccess, async (r
 // Update company settings
 app.put('/api/company/settings', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
-    const { name, timesheet_deadline_day, company_vat, company_email, default_vat_rate } = req.body;
+    const { 
+      name, address, representative_name, timesheet_deadline_day, 
+      company_vat, company_email, default_vat_rate, 
+      bank_name, bank_iban, bank_swift, bank_address 
+    } = req.body;
     
     const result = await pool.query(
       `UPDATE companies 
        SET name = $1, 
-           timesheet_deadline_day = $2, 
-           company_vat = $3, 
-           company_email = $4,
-           default_vat_rate = $5,
+           address = $2,
+           representative_name = $3,
+           timesheet_deadline_day = $4, 
+           company_vat = $5, 
+           company_email = $6,
+           default_vat_rate = $7,
+           bank_name = $8,
+           bank_iban = $9,
+           bank_swift = $10,
+           bank_address = $11,
            updated_at = NOW()
-       WHERE id = $6
+       WHERE id = $12
        RETURNING *`,
-      [name, timesheet_deadline_day, company_vat, company_email, default_vat_rate, req.companyId]
+      [name, address, representative_name, timesheet_deadline_day, 
+       company_vat, company_email, default_vat_rate, 
+       bank_name, bank_iban, bank_swift, bank_address, req.companyId]
     );
     
     res.json({ message: 'Settings updated successfully', company: result.rows[0] });
