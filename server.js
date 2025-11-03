@@ -9,8 +9,16 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const morgan = require('morgan');
 require('dotenv').config();
+const { createClient } = require('@supabase/supabase-js');
+
 
 const app = express();
+
+// Supabase client for file uploads
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
 
 // Middleware
 app.use(helmet({
@@ -1090,6 +1098,226 @@ app.put('/api/invoices/:id/vat-toggle', authenticateToken, checkCompanyAccess, a
        RETURNING *`,
       [vatEnabled, newVatAmount, newTotal, id, req.companyId]
     );
+
+    // Generate PDF for an invoice
+app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const PDFDocument = require('pdfkit');
+    
+    // Get invoice with all related data
+    const invoiceResult = await pool.query(`
+      SELECT i.*,
+             c.consultant_id, c.client_id,
+             cons.first_name as consultant_first_name,
+             cons.last_name as consultant_last_name,
+             cons.company_name as consultant_company_name,
+             cons.company_address as consultant_company_address,
+             cons.company_vat as consultant_company_vat,
+             cons.iban as consultant_iban,
+             cons.swift as consultant_swift,
+             cli.first_name as client_first_name,
+             cli.last_name as client_last_name,
+             cli.company_name as client_company_name,
+             cli.company_address as client_company_address,
+             cli.company_vat as client_company_vat,
+             comp.name as company_name,
+             comp.address as company_address,
+             comp.company_vat as company_vat_number,
+             comp.representative_name,
+             comp.bank_name,
+             comp.bank_iban,
+             comp.bank_swift,
+             comp.bank_address
+      FROM invoices i
+      JOIN contracts c ON i.contract_id = c.id
+      JOIN consultants cons ON c.consultant_id = cons.id
+      JOIN clients cli ON c.client_id = cli.id
+      JOIN companies comp ON i.company_id = comp.id
+      WHERE i.id = $1 AND i.company_id = $2
+    `, [id, req.companyId]);
+
+    if (invoiceResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    const invoice = invoiceResult.rows[0];
+    
+    // Determine FROM and TO based on invoice type
+    let fromInfo, toInfo;
+    if (invoice.invoice_type === 'consultant') {
+      // Consultant invoice: FROM consultant TO agency
+      fromInfo = {
+        name: `${invoice.consultant_first_name} ${invoice.consultant_last_name}`,
+        company: invoice.consultant_company_name,
+        address: invoice.consultant_company_address,
+        vat: invoice.consultant_company_vat,
+        iban: invoice.consultant_iban,
+        swift: invoice.consultant_swift
+      };
+      toInfo = {
+        name: invoice.representative_name,
+        company: invoice.company_name,
+        address: invoice.company_address,
+        vat: invoice.company_vat_number
+      };
+    } else {
+      // Client invoice: FROM agency TO client
+      fromInfo = {
+        name: invoice.representative_name,
+        company: invoice.company_name,
+        address: invoice.company_address,
+        vat: invoice.company_vat_number,
+        iban: invoice.bank_iban,
+        swift: invoice.bank_swift
+      };
+      toInfo = {
+        name: `${invoice.client_first_name} ${invoice.client_last_name}`,
+        company: invoice.client_company_name,
+        address: invoice.client_company_address,
+        vat: invoice.client_company_vat
+      };
+    }
+
+    // Create PDF
+    const doc = new PDFDocument({ margin: 50, size: 'A4' });
+    const chunks = [];
+    
+    doc.on('data', chunk => chunks.push(chunk));
+    doc.on('end', async () => {
+      const pdfBuffer = Buffer.concat(chunks);
+      
+      // Upload to Supabase Storage
+      const bucketName = invoice.invoice_type === 'consultant' ? 'consultant-invoices' : 'client-invoices';
+      const fileName = `${invoice.invoice_number.replace(/\//g, '-')}.pdf`;
+      
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from(bucketName)
+        .upload(fileName, pdfBuffer, {
+          contentType: 'application/pdf',
+          upsert: true
+        });
+
+      if (uploadError) {
+        console.error('Upload error:', uploadError);
+        return res.status(500).json({ error: 'Failed to upload PDF' });
+      }
+
+      // Get public URL
+      const { data: urlData } = supabase.storage
+        .from(bucketName)
+        .getPublicUrl(fileName);
+
+      const pdfUrl = urlData.publicUrl;
+
+      // Update invoice with PDF URL
+      await pool.query(
+        'UPDATE invoices SET pdf_url = $1, updated_at = NOW() WHERE id = $2',
+        [pdfUrl, id]
+      );
+
+      res.json({ 
+        message: 'PDF generated successfully', 
+        pdfUrl 
+      });
+    });
+
+    // Build PDF content
+    const pageWidth = doc.page.width;
+    const margin = 50;
+    const contentWidth = pageWidth - (margin * 2);
+    
+    // Header section
+    doc.fontSize(20).font('Helvetica-Bold').text(fromInfo.company, margin, 50);
+    doc.fontSize(10).font('Helvetica');
+    doc.text(`Address: ${fromInfo.address}`, margin, 80);
+    doc.text(`VAT: ${fromInfo.vat}`, margin, 95);
+    doc.text(`To: ${toInfo.name}`, margin, 110);
+
+    // TO and FROM section
+    const midPoint = pageWidth / 2;
+    doc.fontSize(12).font('Helvetica-Bold').text('TO:', margin, 150);
+    doc.fontSize(10).font('Helvetica');
+    doc.text(`Address: ${toInfo.address}`, margin, 170);
+    doc.text(`VAT: ${toInfo.vat}`, margin, 185);
+    doc.text(`To: ${toInfo.name}`, margin, 200);
+
+    doc.fontSize(12).font('Helvetica-Bold').text('FROM:', midPoint, 150);
+    doc.fontSize(10).font('Helvetica');
+    doc.text(`Address: ${fromInfo.address}`, midPoint, 170);
+    doc.text(`VAT: ${fromInfo.vat}`, midPoint, 185);
+    doc.text(`From: ${fromInfo.name}`, midPoint, 200);
+
+    // Invoice details
+    doc.fontSize(16).font('Helvetica-Bold')
+       .text(`INVOICE No. ${invoice.invoice_number}`, margin, 240, { align: 'center' });
+    
+    const invoiceDate = new Date(invoice.invoice_date).toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    });
+    doc.fontSize(12).font('Helvetica')
+       .text(`Date: ${invoiceDate}`, margin, 270, { align: 'center' });
+
+    // Table
+    const tableTop = 320;
+    const col1 = margin;
+    const col2 = margin + 60;
+    const col3 = margin + 280;
+    const col4 = margin + 380;
+    const col5 = margin + 460;
+
+    // Table headers
+    doc.fontSize(10).font('Helvetica-Bold');
+    doc.text('No.', col1, tableTop);
+    doc.text('Article number / Description', col2, tableTop);
+    doc.text('Quantity', col3, tableTop);
+    doc.text('Unit price', col4, tableTop);
+    doc.text('Total price', col5, tableTop);
+    
+    doc.moveTo(margin, tableTop + 15)
+       .lineTo(pageWidth - margin, tableTop + 15)
+       .stroke();
+
+    // Table row
+    const rowTop = tableTop + 25;
+    doc.fontSize(9).font('Helvetica');
+    doc.text('1', col1, rowTop);
+    
+    const periodMonth = new Date(invoice.period_to).toLocaleDateString('en-US', { month: 'long' });
+    doc.text(`IT Services/Contract Coordination - ${periodMonth}`, col2, rowTop, { width: 200 });
+    doc.text(invoice.days_worked.toString(), col3, rowTop);
+    doc.text(`€${parseFloat(invoice.daily_rate).toFixed(2)}`, col4, rowTop);
+    doc.text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col5, rowTop);
+
+    // VAT row (if enabled)
+    if (invoice.vat_enabled) {
+      const vatRowTop = rowTop + 40;
+      doc.text(`VAT ${parseFloat(invoice.vat_rate).toFixed(0)}%`, col4, vatRowTop);
+      doc.text(`€${parseFloat(invoice.vat_amount).toFixed(2)}`, col5, vatRowTop);
+    }
+
+    // Total
+    const totalTop = invoice.vat_enabled ? rowTop + 65 : rowTop + 40;
+    doc.fontSize(11).font('Helvetica-Bold');
+    doc.text('Total to pay:', col4, totalTop);
+    doc.text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, col5, totalTop);
+
+    // Bank info
+    const bankTop = totalTop + 60;
+    doc.fontSize(10).font('Helvetica-Bold').text('Please pay to:', margin, bankTop);
+    doc.fontSize(9).font('Helvetica');
+    doc.text(`Bank: ${fromInfo.iban ? invoice.bank_name || 'N/A' : 'N/A'}`, margin, bankTop + 20);
+    doc.text(`IBAN: ${fromInfo.iban || 'N/A'}`, margin, bankTop + 35);
+    doc.text(`SWIFT: ${fromInfo.swift || 'N/A'}`, margin, bankTop + 50);
+
+    doc.end();
+  } catch (error) {
+    console.error('Generate PDF error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
     
     res.json({ 
       message: `VAT ${vatEnabled ? 'enabled' : 'disabled'} successfully`, 
