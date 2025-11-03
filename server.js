@@ -1064,6 +1064,7 @@ app.put('/api/invoices/:id/vat', authenticateToken, checkCompanyAccess, async (r
 });
 
 // Toggle VAT enabled/disabled
+// Toggle VAT enabled/disabled
 app.put('/api/invoices/:id/vat-toggle', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1098,8 +1099,18 @@ app.put('/api/invoices/:id/vat-toggle', authenticateToken, checkCompanyAccess, a
        RETURNING *`,
       [vatEnabled, newVatAmount, newTotal, id, req.companyId]
     );
+    
+    res.json({ 
+      message: `VAT ${vatEnabled ? 'enabled' : 'disabled'} successfully`, 
+      invoice: result.rows[0] 
+    });
+  } catch (error) {
+    console.error('Toggle VAT error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
-    // Generate PDF for an invoice
+// Generate PDF for an invoice (SEPARATE ENDPOINT)
 app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1225,14 +1236,12 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     // Build PDF content
     const pageWidth = doc.page.width;
     const margin = 50;
-    const contentWidth = pageWidth - (margin * 2);
     
     // Header section
     doc.fontSize(20).font('Helvetica-Bold').text(fromInfo.company, margin, 50);
     doc.fontSize(10).font('Helvetica');
     doc.text(`Address: ${fromInfo.address}`, margin, 80);
     doc.text(`VAT: ${fromInfo.vat}`, margin, 95);
-    doc.text(`To: ${toInfo.name}`, margin, 110);
 
     // TO and FROM section
     const midPoint = pageWidth / 2;
@@ -1315,16 +1324,6 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     doc.end();
   } catch (error) {
     console.error('Generate PDF error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-    
-    res.json({ 
-      message: `VAT ${vatEnabled ? 'enabled' : 'disabled'} successfully`, 
-      invoice: result.rows[0] 
-    });
-  } catch (error) {
-    console.error('Toggle VAT error:', error);
     res.status(500).json({ error: error.message });
   }
 });
