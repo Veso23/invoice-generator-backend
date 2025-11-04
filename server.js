@@ -1309,9 +1309,9 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
 const tableTop = 310;
 const col1 = margin;
 const col2 = margin + 50;
-const col3 = margin + 280;  // shifted left 20px
-const col4 = margin + 360;  // shifted left 20px
-const col5 = margin + 440;  // shifted left 30px
+const col3 = margin + 250;  // Days - shifted more left
+const col4 = margin + 330;  // Unit price - shifted more left
+const col5 = margin + 410;  // Total - shifted more left
 
     // Table headers
     doc.fontSize(10).font('Helvetica-Bold');
