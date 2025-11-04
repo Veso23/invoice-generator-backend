@@ -942,6 +942,29 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
       [req.companyId]
     );
     const deadlineDay = companyResult.rows[0]?.timesheet_deadline_day || 15;
+
+    // Get ALL timesheets (including processed ones) - for invoice viewing
+app.get('/api/timesheets/all', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT al.*,
+             c.first_name as consultant_first_name,
+             c.last_name as consultant_last_name,
+             c.company_name as consultant_company_name,
+             c.id as consultant_id,
+             CASE WHEN c.id IS NOT NULL THEN true ELSE false END as consultant_matched
+      FROM automation_logs al
+      LEFT JOIN consultants c ON al.sender_email = c.email AND c.company_id = $1
+      WHERE al.company_id = $1 OR (al.sender_email = c.email AND c.company_id = $1)
+      ORDER BY al.created_at DESC
+    `, [req.companyId]);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get all timesheets error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
     
     // Get all consultants with active contracts
     const consultantsResult = await pool.query(`
