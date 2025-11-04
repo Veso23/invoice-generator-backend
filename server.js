@@ -1318,7 +1318,7 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     doc.fontSize(10).font('Helvetica-Bold');
     doc.text('No.', col1, tableTop);
     doc.text('Article / Description', col2, tableTop);
-    ddoc.text('Days', col3, tableTop, { width: 60, align: 'right' });
+    doc.text('Days', col3, tableTop, { width: 60, align: 'right' });
     doc.text('Unit price', col4, tableTop, { width: 70, align: 'right' });
     doc.text('Total', col5, tableTop, { width: 70, align: 'right' });
     
