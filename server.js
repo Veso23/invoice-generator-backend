@@ -1237,54 +1237,92 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     const pageWidth = doc.page.width;
     const margin = 50;
     
-    // Header section
+    // Header - Company Name only
     doc.fontSize(20).font('Helvetica-Bold').text(fromInfo.company, margin, 50);
-    doc.fontSize(10).font('Helvetica');
-    doc.text(`Address: ${fromInfo.address}`, margin, 80);
-    doc.text(`VAT: ${fromInfo.vat}`, margin, 95);
 
-    // TO and FROM section
-    const midPoint = pageWidth / 2;
-    doc.fontSize(12).font('Helvetica-Bold').text('TO:', margin, 150);
-    doc.fontSize(10).font('Helvetica');
-    doc.text(`Address: ${toInfo.address}`, margin, 170);
-    doc.text(`VAT: ${toInfo.vat}`, margin, 185);
-    doc.text(`To: ${toInfo.name}`, margin, 200);
+    // TO and FROM sections (side by side)
+    const leftCol = margin;
+    const rightCol = pageWidth / 2 + 20;
+    let yPos = 100;
 
-    doc.fontSize(12).font('Helvetica-Bold').text('FROM:', midPoint, 150);
+    // TO section (left)
+    doc.fontSize(12).font('Helvetica-Bold').text('TO:', leftCol, yPos);
+    yPos += 20;
     doc.fontSize(10).font('Helvetica');
-    doc.text(`Address: ${fromInfo.address}`, midPoint, 170);
-    doc.text(`VAT: ${fromInfo.vat}`, midPoint, 185);
-    doc.text(`From: ${fromInfo.name}`, midPoint, 200);
-
-    // Invoice details
-    doc.fontSize(16).font('Helvetica-Bold')
-       .text(`INVOICE No. ${invoice.invoice_number}`, margin, 240, { align: 'center' });
     
-    const invoiceDate = new Date(invoice.invoice_date).toLocaleDateString('en-GB', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric'
-    });
+    // TO: Person name
+    doc.text(toInfo.name, leftCol, yPos);
+    yPos += 15;
+    
+    // TO: Company name
+    doc.text(toInfo.company, leftCol, yPos, { width: 220 });
+    yPos += 15;
+    
+    // TO: Address (with wrapping)
+    const toAddressLines = doc.heightOfString(toInfo.address, { width: 220 });
+    doc.text(toInfo.address, leftCol, yPos, { width: 220 });
+    yPos += toAddressLines + 5;
+    
+    // TO: VAT
+    doc.text(`VAT: ${toInfo.vat}`, leftCol, yPos);
+
+    // FROM section (right)
+    let fromYPos = 100;
+    doc.fontSize(12).font('Helvetica-Bold').text('FROM:', rightCol, fromYPos);
+    fromYPos += 20;
+    doc.fontSize(10).font('Helvetica');
+    
+    // FROM: Company name (no person name)
+    doc.text(fromInfo.company, rightCol, fromYPos, { width: 220 });
+    fromYPos += 15;
+    
+    // FROM: Address (with wrapping)
+    const fromAddressLines = doc.heightOfString(fromInfo.address, { width: 220 });
+    doc.text(fromInfo.address, rightCol, fromYPos, { width: 220 });
+    fromYPos += fromAddressLines + 5;
+    
+    // FROM: VAT
+    doc.text(`VAT: ${fromInfo.vat}`, rightCol, fromYPos);
+    fromYPos += 15;
+    
+    // FROM: Person name (at bottom)
+    doc.text(`From: ${fromInfo.name}`, rightCol, fromYPos);
+
+    // Invoice details (centered)
+    doc.fontSize(16).font('Helvetica-Bold')
+       .text(`INVOICE No. ${invoice.invoice_number}`, margin, 240, { 
+         align: 'center',
+         width: pageWidth - (margin * 2)
+       });
+    
+    const invoiceDate = new Date(invoice.period_to).toLocaleDateString('en-GB', {
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric'
+});
     doc.fontSize(12).font('Helvetica')
-       .text(`Date: ${invoiceDate}`, margin, 270, { align: 'center' });
+       .text(`Date: ${invoiceDate}`, margin, 265, { 
+         align: 'center',
+         width: pageWidth - (margin * 2)
+       });
 
     // Table
-    const tableTop = 320;
+    const tableTop = 310;
     const col1 = margin;
-    const col2 = margin + 60;
-    const col3 = margin + 280;
+    const col2 = margin + 50;
+    const col3 = margin + 300;
     const col4 = margin + 380;
-    const col5 = margin + 460;
+    const col5 = margin + 470;
 
     // Table headers
     doc.fontSize(10).font('Helvetica-Bold');
     doc.text('No.', col1, tableTop);
-    doc.text('Article number / Description', col2, tableTop);
-    doc.text('Quantity', col3, tableTop);
-    doc.text('Unit price', col4, tableTop);
-    doc.text('Total price', col5, tableTop);
+    doc.text('Article / Description', col2, tableTop);
+    ddoc.text('Days', col3, tableTop, { width: 60, align: 'right' });
+    doc.text('Unit price', col4, tableTop, { width: 70, align: 'right' });
+    doc.text('Total', col5, tableTop, { width: 70, align: 'right' });
     
+    // Underline for headers
     doc.moveTo(margin, tableTop + 15)
        .lineTo(pageWidth - margin, tableTop + 15)
        .stroke();
@@ -1294,30 +1332,47 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     doc.fontSize(9).font('Helvetica');
     doc.text('1', col1, rowTop);
     
-    const periodMonth = new Date(invoice.period_to).toLocaleDateString('en-US', { month: 'long' });
-    doc.text(`IT Services/Contract Coordination - ${periodMonth}`, col2, rowTop, { width: 200 });
-    doc.text(invoice.days_worked.toString(), col3, rowTop);
-    doc.text(`€${parseFloat(invoice.daily_rate).toFixed(2)}`, col4, rowTop);
-    doc.text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col5, rowTop);
+const periodMonth = new Date(invoice.period_to).toLocaleDateString('en-US', { month: 'long' });
+
+// Different description based on invoice type
+if (invoice.invoice_type === 'client') {
+  // Client invoice: Show consultant name and contract number
+  const consultantName = `${invoice.consultant_first_name} ${invoice.consultant_last_name}`;
+  doc.text(`IT Services/${consultantName} - ${periodMonth}`, col2, rowTop, { width: 230 });
+  doc.text(`Contract: ${invoice.consultant_contract_id || 'N/A'}`, col2, rowTop + 12, { width: 230, fontSize: 8 });
+} else {
+  // Consultant invoice: Simple description
+  doc.text(`IT Services - ${periodMonth}`, col2, rowTop, { width: 230 });
+  doc.text(`Contract: ${invoice.consultant_contract_id || 'N/A'}`, col2, rowTop + 12, { width: 230, fontSize: 8 });
+}
+    doc.text(invoice.days_worked.toString(), col3, rowTop, { width: 60, align: 'right' });
+    doc.text(`€${parseFloat(invoice.daily_rate).toFixed(2)}`, col4, rowTop, { width: 70, align: 'right' });
+    doc.text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col5, rowTop, { width: 70, align: 'right' });
 
     // VAT row (if enabled)
+    let summaryTop = rowTop + 50;
     if (invoice.vat_enabled) {
-      const vatRowTop = rowTop + 40;
-      doc.text(`VAT ${parseFloat(invoice.vat_rate).toFixed(0)}%`, col4, vatRowTop);
-      doc.text(`€${parseFloat(invoice.vat_amount).toFixed(2)}`, col5, vatRowTop);
+      doc.fontSize(10).font('Helvetica');
+      doc.text(`VAT ${parseFloat(invoice.vat_rate).toFixed(0)}%`, col4, summaryTop, { width: 70, align: 'right' });
+      doc.text(`€${parseFloat(invoice.vat_amount).toFixed(2)}`, col5, summaryTop, { width: 70, align: 'right' });
+      summaryTop += 25;
     }
 
-    // Total
-    const totalTop = invoice.vat_enabled ? rowTop + 65 : rowTop + 40;
+    // Total (with line above)
+    doc.moveTo(col4, summaryTop - 5)
+       .lineTo(pageWidth - margin, summaryTop - 5)
+       .stroke();
+    
+    summaryTop += 10;
     doc.fontSize(11).font('Helvetica-Bold');
-    doc.text('Total to pay:', col4, totalTop);
-    doc.text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, col5, totalTop);
+    doc.text('Total amount:', col4, summaryTop, { width: 70, align: 'right' });
+    doc.text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, col5, summaryTop, { width: 70, align: 'right' });
 
     // Bank info
-    const bankTop = totalTop + 60;
+    const bankTop = summaryTop + 60;
     doc.fontSize(10).font('Helvetica-Bold').text('Please pay to:', margin, bankTop);
     doc.fontSize(9).font('Helvetica');
-    doc.text(`Bank: ${fromInfo.iban ? invoice.bank_name || 'N/A' : 'N/A'}`, margin, bankTop + 20);
+    doc.text(`Bank: ${fromInfo.iban ? (invoice.invoice_type === 'consultant' ? 'N/A' : invoice.bank_name || 'N/A') : 'N/A'}`, margin, bankTop + 20);
     doc.text(`IBAN: ${fromInfo.iban || 'N/A'}`, margin, bankTop + 35);
     doc.text(`SWIFT: ${fromInfo.swift || 'N/A'}`, margin, bankTop + 50);
 
