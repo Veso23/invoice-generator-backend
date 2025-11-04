@@ -1306,6 +1306,7 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
        });
 
     // Table
+const tableTop = 310;
 const col1 = margin;
 const col2 = margin + 50;
 const col3 = margin + 280;  // shifted left 20px
