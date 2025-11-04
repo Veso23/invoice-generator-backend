@@ -1120,6 +1120,8 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     const invoiceResult = await pool.query(`
       SELECT i.*,
              c.consultant_id, c.client_id,
+             c.consultant_contract_id,
+             c.client_contract_id,
              cons.first_name as consultant_first_name,
              cons.last_name as consultant_last_name,
              cons.company_name as consultant_company_name,
@@ -1284,9 +1286,6 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     // FROM: VAT
     doc.text(`VAT: ${fromInfo.vat}`, rightCol, fromYPos);
     fromYPos += 15;
-    
-    // FROM: Person name (at bottom)
-    doc.text(`From: ${fromInfo.name}`, rightCol, fromYPos);
 
     // Invoice details (centered)
     doc.fontSize(16).font('Helvetica-Bold')
@@ -1307,12 +1306,11 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
        });
 
     // Table
-    const tableTop = 310;
-    const col1 = margin;
-    const col2 = margin + 50;
-    const col3 = margin + 300;
-    const col4 = margin + 380;
-    const col5 = margin + 470;
+const col1 = margin;
+const col2 = margin + 50;
+const col3 = margin + 280;  // shifted left 20px
+const col4 = margin + 360;  // shifted left 20px
+const col5 = margin + 440;  // shifted left 30px
 
     // Table headers
     doc.fontSize(10).font('Helvetica-Bold');
@@ -1336,12 +1334,12 @@ const periodMonth = new Date(invoice.period_to).toLocaleDateString('en-US', { mo
 
 // Different description based on invoice type
 if (invoice.invoice_type === 'client') {
-  // Client invoice: Show consultant name and contract number
+  // Client invoice: Show consultant name and CLIENT contract ID
   const consultantName = `${invoice.consultant_first_name} ${invoice.consultant_last_name}`;
   doc.text(`IT Services/${consultantName} - ${periodMonth}`, col2, rowTop, { width: 230 });
-  doc.text(`Contract: ${invoice.consultant_contract_id || 'N/A'}`, col2, rowTop + 12, { width: 230, fontSize: 8 });
+  doc.text(`Contract: ${invoice.client_contract_id || 'N/A'}`, col2, rowTop + 12, { width: 230, fontSize: 8 });
 } else {
-  // Consultant invoice: Simple description
+  // Consultant invoice: Simple description with CONSULTANT contract ID
   doc.text(`IT Services - ${periodMonth}`, col2, rowTop, { width: 230 });
   doc.text(`Contract: ${invoice.consultant_contract_id || 'N/A'}`, col2, rowTop + 12, { width: 230, fontSize: 8 });
 }
