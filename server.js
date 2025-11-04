@@ -933,17 +933,7 @@ app.put('/api/company/settings', authenticateToken, checkCompanyAccess, async (r
   }
 });
 
-// Get timesheet status for all active consultants
-app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (req, res) => {
-  try {
-    // Get company deadline setting
-    const companyResult = await pool.query(
-      'SELECT timesheet_deadline_day FROM companies WHERE id = $1',
-      [req.companyId]
-    );
-    const deadlineDay = companyResult.rows[0]?.timesheet_deadline_day || 15;
-
-    // Get ALL timesheets (including processed ones) - for invoice viewing
+// Get ALL timesheets (including processed ones) - for invoice viewing
 app.get('/api/timesheets/all', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -965,7 +955,17 @@ app.get('/api/timesheets/all', authenticateToken, checkCompanyAccess, async (req
     res.status(500).json({ error: 'Internal server error' });
   }
 });
-    
+
+// Get timesheet status for all active consultants
+app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    // Get company deadline setting
+    const companyResult = await pool.query(
+      'SELECT timesheet_deadline_day FROM companies WHERE id = $1',
+      [req.companyId]
+    );
+    const deadlineDay = companyResult.rows[0]?.timesheet_deadline_day || 15;
+        
     // Get all consultants with active contracts
     const consultantsResult = await pool.query(`
       SELECT DISTINCT
