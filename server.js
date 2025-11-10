@@ -73,6 +73,100 @@ pool.on('error', (err) => {
   console.error('❌ Database connection error:', err);
 });
 
+const nodemailer = require('nodemailer');
+
+// Email Service
+const sendInvoiceEmail = async (invoice, companySettings, recipientEmail, recipientName) => {
+  // Check if SMTP is configured
+  if (!companySettings.smtp_host || !companySettings.smtp_username || !companySettings.smtp_password) {
+    throw new Error('Email settings not configured. Please configure SMTP in Company Settings.');
+  }
+
+  // Create transporter
+  const transporter = nodemailer.createTransport({
+    host: companySettings.smtp_host,
+    port: companySettings.smtp_port || 587,
+    secure: companySettings.smtp_secure !== false, // true for 465, false for other ports
+    auth: {
+      user: companySettings.smtp_username,
+      pass: companySettings.smtp_password
+    }
+  });
+
+  // Verify connection
+  try {
+    await transporter.verify();
+  } catch (error) {
+    console.error('SMTP verification failed:', error);
+    throw new Error('Failed to connect to email server. Please check your SMTP settings.');
+  }
+
+  // Email content
+  const emailSubject = `Invoice ${invoice.invoice_number} - ${companySettings.name}`;
+  
+  const emailHTML = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background-color: #2563eb; color: white; padding: 20px; text-align: center; }
+        .content { background-color: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; }
+        .invoice-details { background-color: white; padding: 15px; margin: 20px 0; border-radius: 5px; }
+        .footer { text-align: center; padding: 20px; font-size: 12px; color: #6b7280; }
+        .button { display: inline-block; background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin: 20px 0; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>${companySettings.name}</h1>
+        </div>
+        <div class="content">
+          <p>Dear ${recipientName},</p>
+          
+          <p>Please find your invoice attached to this email.</p>
+          
+          <div class="invoice-details">
+            <strong>Invoice Number:</strong> ${invoice.invoice_number}<br>
+            <strong>Date:</strong> ${new Date(invoice.invoice_date).toLocaleDateString('en-GB')}<br>
+            <strong>Amount:</strong> €${parseFloat(invoice.total_amount).toFixed(2)}<br>
+            <strong>Status:</strong> ${invoice.status}
+          </div>
+          
+          ${invoice.pdf_url ? `<a href="${invoice.pdf_url}" class="button">Download Invoice PDF</a>` : ''}
+          
+          <p>If you have any questions about this invoice, please don't hesitate to contact us.</p>
+          
+          <p>Best regards,<br>
+          ${companySettings.representative_name || companySettings.name}</p>
+        </div>
+        <div class="footer">
+          <p>${companySettings.address || ''}</p>
+          <p>${companySettings.company_email || ''}</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  // Send email
+  const info = await transporter.sendMail({
+    from: `"${companySettings.smtp_from_name || companySettings.name}" <${companySettings.smtp_from_email || companySettings.smtp_username}>`,
+    to: recipientEmail,
+    subject: emailSubject,
+    html: emailHTML,
+    attachments: invoice.pdf_url ? [{
+      filename: `Invoice-${invoice.invoice_number}.pdf`,
+      path: invoice.pdf_url
+    }] : []
+  });
+
+  return info;
+};
+
+
 // Authentication middleware
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -891,7 +985,9 @@ app.put('/api/company/settings', authenticateToken, checkCompanyAccess, async (r
     const { 
       name, address, representative_name, timesheet_deadline_day, 
       company_vat, company_email, default_vat_rate, 
-      bank_name, bank_iban, bank_swift, bank_address 
+      bank_name, bank_iban, bank_swift, bank_address,
+      smtp_host, smtp_port, smtp_username, smtp_password,
+      smtp_from_email, smtp_from_name, smtp_secure
     } = req.body;
     
     const result = await pool.query(
@@ -907,12 +1003,22 @@ app.put('/api/company/settings', authenticateToken, checkCompanyAccess, async (r
            bank_iban = $9,
            bank_swift = $10,
            bank_address = $11,
+           smtp_host = $12,
+           smtp_port = $13,
+           smtp_username = $14,
+           smtp_password = $15,
+           smtp_from_email = $16,
+           smtp_from_name = $17,
+           smtp_secure = $18,
            updated_at = NOW()
-       WHERE id = $12
+       WHERE id = $19
        RETURNING *`,
       [name, address, representative_name, timesheet_deadline_day, 
        company_vat, company_email, default_vat_rate, 
-       bank_name, bank_iban, bank_swift, bank_address, req.companyId]
+       bank_name, bank_iban, bank_swift, bank_address,
+       smtp_host, smtp_port, smtp_username, smtp_password,
+       smtp_from_email, smtp_from_name, smtp_secure,
+       req.companyId]
     );
     
     res.json({ message: 'Settings updated successfully', company: result.rows[0] });
@@ -1221,6 +1327,93 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
         vat: invoice.client_company_vat
       };
     }
+
+    // Send invoice email
+app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Get invoice with all details
+    const invoiceResult = await pool.query(`
+      SELECT i.*,
+             c.consultant_id, c.client_id,
+             cons.first_name as consultant_first_name,
+             cons.last_name as consultant_last_name,
+             cons.company_name as consultant_company_name,
+             cons.email as consultant_email,
+             cli.first_name as client_first_name,
+             cli.last_name as client_last_name,
+             cli.company_name as client_company_name,
+             cli.email as client_email,
+             comp.name as company_name,
+             comp.address as company_address,
+             comp.company_email,
+             comp.representative_name,
+             comp.smtp_host,
+             comp.smtp_port,
+             comp.smtp_username,
+             comp.smtp_password,
+             comp.smtp_from_email,
+             comp.smtp_from_name,
+             comp.smtp_secure
+      FROM invoices i
+      JOIN contracts c ON i.contract_id = c.id
+      JOIN consultants cons ON c.consultant_id = cons.id
+      JOIN clients cli ON c.client_id = cli.id
+      JOIN companies comp ON i.company_id = comp.id
+      WHERE i.id = $1 AND i.company_id = $2
+    `, [id, req.companyId]);
+
+    if (invoiceResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    const invoice = invoiceResult.rows[0];
+    
+    // Check if PDF exists
+    if (!invoice.pdf_url) {
+      return res.status(400).json({ error: 'Please generate PDF before sending email' });
+    }
+    
+    // Determine recipient based on invoice type
+    let recipientEmail, recipientName;
+    if (invoice.invoice_type === 'consultant') {
+      recipientEmail = invoice.consultant_email;
+      recipientName = `${invoice.consultant_first_name} ${invoice.consultant_last_name}`;
+    } else {
+      recipientEmail = invoice.client_email;
+      recipientName = `${invoice.client_first_name} ${invoice.client_last_name}`;
+    }
+    
+    if (!recipientEmail) {
+      return res.status(400).json({ error: 'Recipient email not found' });
+    }
+    
+    // Send email
+    await sendInvoiceEmail(invoice, invoice, recipientEmail, recipientName);
+    
+    // Update invoice status
+    await pool.query(
+      `UPDATE invoices 
+       SET email_sent = true, 
+           email_sent_at = NOW(), 
+           email_sent_to = $1,
+           status = CASE WHEN status = 'draft' THEN 'sent' ELSE status END,
+           updated_at = NOW()
+       WHERE id = $2`,
+      [recipientEmail, id]
+    );
+    
+    res.json({ 
+      message: 'Email sent successfully',
+      recipient: recipientEmail
+    });
+    
+  } catch (error) {
+    console.error('Send email error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
     // Create PDF
     const doc = new PDFDocument({ margin: 50, size: 'A4' });
