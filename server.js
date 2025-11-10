@@ -1202,7 +1202,6 @@ app.put('/api/invoices/:id/vat', authenticateToken, checkCompanyAccess, async (r
 });
 
 // Toggle VAT enabled/disabled
-// Toggle VAT enabled/disabled
 app.put('/api/invoices/:id/vat-toggle', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1248,7 +1247,8 @@ app.put('/api/invoices/:id/vat-toggle', authenticateToken, checkCompanyAccess, a
   }
 });
 
-// Generate PDF for an invoice (SEPARATE ENDPOINT)
+
+// Generate PDF for an invoice
 app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1297,7 +1297,6 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     // Determine FROM and TO based on invoice type
     let fromInfo, toInfo;
     if (invoice.invoice_type === 'consultant') {
-      // Consultant invoice: FROM consultant TO agency
       fromInfo = {
         name: `${invoice.consultant_first_name} ${invoice.consultant_last_name}`,
         company: invoice.consultant_company_name,
@@ -1313,7 +1312,6 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
         vat: invoice.company_vat_number
       };
     } else {
-      // Client invoice: FROM agency TO client
       fromInfo = {
         name: invoice.representative_name,
         company: invoice.company_name,
@@ -1330,12 +1328,166 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       };
     }
 
-    // Send invoice email
+    // Create PDF
+    const doc = new PDFDocument({ margin: 50, size: 'A4' });
+    const chunks = [];
+    
+    doc.on('data', chunk => chunks.push(chunk));
+    doc.on('end', async () => {
+      const pdfBuffer = Buffer.concat(chunks);
+      
+      const bucketName = invoice.invoice_type === 'consultant' ? 'consultant-invoices' : 'client-invoices';
+      const fileName = `${invoice.invoice_number.replace(/\//g, '-')}.pdf`;
+      
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from(bucketName)
+        .upload(fileName, pdfBuffer, {
+          contentType: 'application/pdf',
+          upsert: true
+        });
+
+      if (uploadError) {
+        console.error('Upload error:', uploadError);
+        return res.status(500).json({ error: 'Failed to upload PDF' });
+      }
+
+      const { data: urlData } = supabase.storage
+        .from(bucketName)
+        .getPublicUrl(fileName);
+
+      const pdfUrl = urlData.publicUrl;
+
+      await pool.query(
+        'UPDATE invoices SET pdf_url = $1, updated_at = NOW() WHERE id = $2',
+        [pdfUrl, id]
+      );
+
+      res.json({ message: 'PDF generated successfully', pdfUrl });
+    });
+
+    // Build PDF content
+    const pageWidth = doc.page.width;
+    const margin = 50;
+    
+    doc.fontSize(20).font('Helvetica-Bold').text(fromInfo.company, margin, 50);
+
+    const leftCol = margin;
+    const rightCol = pageWidth / 2 + 20;
+    let yPos = 100;
+
+    doc.fontSize(12).font('Helvetica-Bold').text('TO:', leftCol, yPos);
+    yPos += 20;
+    doc.fontSize(10).font('Helvetica');
+    doc.text(toInfo.name, leftCol, yPos);
+    yPos += 15;
+    doc.text(toInfo.company, leftCol, yPos, { width: 220 });
+    yPos += 15;
+    const toAddressLines = doc.heightOfString(toInfo.address, { width: 220 });
+    doc.text(toInfo.address, leftCol, yPos, { width: 220 });
+    yPos += toAddressLines + 5;
+    doc.text(`VAT: ${toInfo.vat}`, leftCol, yPos);
+
+    let fromYPos = 100;
+    doc.fontSize(12).font('Helvetica-Bold').text('FROM:', rightCol, fromYPos);
+    fromYPos += 20;
+    doc.fontSize(10).font('Helvetica');
+    doc.text(fromInfo.company, rightCol, fromYPos, { width: 220 });
+    fromYPos += 15;
+    const fromAddressLines = doc.heightOfString(fromInfo.address, { width: 220 });
+    doc.text(fromInfo.address, rightCol, fromYPos, { width: 220 });
+    fromYPos += fromAddressLines + 5;
+    doc.text(`VAT: ${fromInfo.vat}`, rightCol, fromYPos);
+    fromYPos += 15;
+
+    doc.fontSize(16).font('Helvetica-Bold')
+       .text(`INVOICE No. ${invoice.invoice_number}`, margin, 240, { 
+         align: 'center',
+         width: pageWidth - (margin * 2)
+       });
+    
+    const invoiceDate = new Date(invoice.period_to).toLocaleDateString('en-GB', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    });
+    doc.fontSize(12).font('Helvetica')
+       .text(`Date: ${invoiceDate}`, margin, 265, { 
+         align: 'center',
+         width: pageWidth - (margin * 2)
+       });
+
+    const tableTop = 310;
+    const col1 = margin;
+    const col2 = margin + 50;
+    const col3 = margin + 250;
+    const col4 = margin + 330;
+    const col5 = margin + 410;
+
+    doc.fontSize(10).font('Helvetica-Bold');
+    doc.text('No.', col1, tableTop);
+    doc.text('Article / Description', col2, tableTop);
+    doc.text('Days', col3, tableTop, { width: 60, align: 'right' });
+    doc.text('Unit price', col4, tableTop, { width: 70, align: 'right' });
+    doc.text('Total', col5, tableTop, { width: 70, align: 'right' });
+    
+    doc.moveTo(margin, tableTop + 15)
+       .lineTo(pageWidth - margin, tableTop + 15)
+       .stroke();
+
+    const rowTop = tableTop + 25;
+    doc.fontSize(9).font('Helvetica');
+    doc.text('1', col1, rowTop);
+    
+    const periodMonth = new Date(invoice.period_to).toLocaleDateString('en-US', { month: 'long' });
+
+    if (invoice.invoice_type === 'client') {
+      const consultantName = `${invoice.consultant_first_name} ${invoice.consultant_last_name}`;
+      doc.text(`IT Services/${consultantName} - ${periodMonth}`, col2, rowTop, { width: 230 });
+      doc.text(`Contract: ${invoice.client_contract_id || 'N/A'}`, col2, rowTop + 12, { width: 230, fontSize: 8 });
+    } else {
+      doc.text(`IT Services - ${periodMonth}`, col2, rowTop, { width: 230 });
+      doc.text(`Contract: ${invoice.consultant_contract_id || 'N/A'}`, col2, rowTop + 12, { width: 230, fontSize: 8 });
+    }
+    doc.text(invoice.days_worked.toString(), col3, rowTop, { width: 60, align: 'right' });
+    doc.text(`€${parseFloat(invoice.daily_rate).toFixed(2)}`, col4, rowTop, { width: 70, align: 'right' });
+    doc.text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col5, rowTop, { width: 70, align: 'right' });
+
+    let summaryTop = rowTop + 50;
+    if (invoice.vat_enabled) {
+      doc.fontSize(10).font('Helvetica');
+      doc.text(`VAT ${parseFloat(invoice.vat_rate).toFixed(0)}%`, col4, summaryTop, { width: 70, align: 'right' });
+      doc.text(`€${parseFloat(invoice.vat_amount).toFixed(2)}`, col5, summaryTop, { width: 70, align: 'right' });
+      summaryTop += 25;
+    }
+
+    doc.moveTo(col4, summaryTop - 5)
+       .lineTo(pageWidth - margin, summaryTop - 5)
+       .stroke();
+    
+    summaryTop += 10;
+    doc.fontSize(11).font('Helvetica-Bold');
+    doc.text('Total amount:', col4, summaryTop, { width: 70, align: 'right' });
+    doc.text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, col5, summaryTop, { width: 70, align: 'right' });
+
+    const bankTop = summaryTop + 60;
+    doc.fontSize(10).font('Helvetica-Bold').text('Please pay to:', margin, bankTop);
+    doc.fontSize(9).font('Helvetica');
+    doc.text(`Bank: ${fromInfo.iban ? (invoice.invoice_type === 'consultant' ? 'N/A' : invoice.bank_name || 'N/A') : 'N/A'}`, margin, bankTop + 20);
+    doc.text(`IBAN: ${fromInfo.iban || 'N/A'}`, margin, bankTop + 35);
+    doc.text(`SWIFT: ${fromInfo.swift || 'N/A'}`, margin, bankTop + 50);
+
+    doc.end();
+  } catch (error) {
+    console.error('Generate PDF error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Send invoice email
 app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Get invoice with all details
     const invoiceResult = await pool.query(`
       SELECT i.*,
              c.consultant_id, c.client_id,
@@ -1372,12 +1524,10 @@ app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, 
 
     const invoice = invoiceResult.rows[0];
     
-    // Check if PDF exists
     if (!invoice.pdf_url) {
       return res.status(400).json({ error: 'Please generate PDF before sending email' });
     }
     
-    // Determine recipient based on invoice type
     let recipientEmail, recipientName;
     if (invoice.invoice_type === 'consultant') {
       recipientEmail = invoice.consultant_email;
@@ -1391,10 +1541,8 @@ app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, 
       return res.status(400).json({ error: 'Recipient email not found' });
     }
     
-    // Send email
     await sendInvoiceEmail(invoice, invoice, recipientEmail, recipientName);
     
-    // Update invoice status
     await pool.query(
       `UPDATE invoices 
        SET email_sent = true, 
@@ -1413,196 +1561,6 @@ app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, 
     
   } catch (error) {
     console.error('Send email error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-    // Create PDF
-    const doc = new PDFDocument({ margin: 50, size: 'A4' });
-    const chunks = [];
-    
-    doc.on('data', chunk => chunks.push(chunk));
-    doc.on('end', async () => {
-      const pdfBuffer = Buffer.concat(chunks);
-      
-      // Upload to Supabase Storage
-      const bucketName = invoice.invoice_type === 'consultant' ? 'consultant-invoices' : 'client-invoices';
-      const fileName = `${invoice.invoice_number.replace(/\//g, '-')}.pdf`;
-      
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from(bucketName)
-        .upload(fileName, pdfBuffer, {
-          contentType: 'application/pdf',
-          upsert: true
-        });
-
-      if (uploadError) {
-        console.error('Upload error:', uploadError);
-        return res.status(500).json({ error: 'Failed to upload PDF' });
-      }
-
-      // Get public URL
-      const { data: urlData } = supabase.storage
-        .from(bucketName)
-        .getPublicUrl(fileName);
-
-      const pdfUrl = urlData.publicUrl;
-
-      // Update invoice with PDF URL
-      await pool.query(
-        'UPDATE invoices SET pdf_url = $1, updated_at = NOW() WHERE id = $2',
-        [pdfUrl, id]
-      );
-
-      res.json({ 
-        message: 'PDF generated successfully', 
-        pdfUrl 
-      });
-    });
-
-    // Build PDF content
-    const pageWidth = doc.page.width;
-    const margin = 50;
-    
-    // Header - Company Name only
-    doc.fontSize(20).font('Helvetica-Bold').text(fromInfo.company, margin, 50);
-
-    // TO and FROM sections (side by side)
-    const leftCol = margin;
-    const rightCol = pageWidth / 2 + 20;
-    let yPos = 100;
-
-    // TO section (left)
-    doc.fontSize(12).font('Helvetica-Bold').text('TO:', leftCol, yPos);
-    yPos += 20;
-    doc.fontSize(10).font('Helvetica');
-    
-    // TO: Person name
-    doc.text(toInfo.name, leftCol, yPos);
-    yPos += 15;
-    
-    // TO: Company name
-    doc.text(toInfo.company, leftCol, yPos, { width: 220 });
-    yPos += 15;
-    
-    // TO: Address (with wrapping)
-    const toAddressLines = doc.heightOfString(toInfo.address, { width: 220 });
-    doc.text(toInfo.address, leftCol, yPos, { width: 220 });
-    yPos += toAddressLines + 5;
-    
-    // TO: VAT
-    doc.text(`VAT: ${toInfo.vat}`, leftCol, yPos);
-
-    // FROM section (right)
-    let fromYPos = 100;
-    doc.fontSize(12).font('Helvetica-Bold').text('FROM:', rightCol, fromYPos);
-    fromYPos += 20;
-    doc.fontSize(10).font('Helvetica');
-    
-    // FROM: Company name (no person name)
-    doc.text(fromInfo.company, rightCol, fromYPos, { width: 220 });
-    fromYPos += 15;
-    
-    // FROM: Address (with wrapping)
-    const fromAddressLines = doc.heightOfString(fromInfo.address, { width: 220 });
-    doc.text(fromInfo.address, rightCol, fromYPos, { width: 220 });
-    fromYPos += fromAddressLines + 5;
-    
-    // FROM: VAT
-    doc.text(`VAT: ${fromInfo.vat}`, rightCol, fromYPos);
-    fromYPos += 15;
-
-    // Invoice details (centered)
-    doc.fontSize(16).font('Helvetica-Bold')
-       .text(`INVOICE No. ${invoice.invoice_number}`, margin, 240, { 
-         align: 'center',
-         width: pageWidth - (margin * 2)
-       });
-    
-    const invoiceDate = new Date(invoice.period_to).toLocaleDateString('en-GB', {
-  day: '2-digit',
-  month: '2-digit',
-  year: 'numeric'
-});
-    doc.fontSize(12).font('Helvetica')
-       .text(`Date: ${invoiceDate}`, margin, 265, { 
-         align: 'center',
-         width: pageWidth - (margin * 2)
-       });
-
-    // Table
-const tableTop = 310;
-const col1 = margin;
-const col2 = margin + 50;
-const col3 = margin + 250;  // Days - shifted more left
-const col4 = margin + 330;  // Unit price - shifted more left
-const col5 = margin + 410;  // Total - shifted more left
-
-    // Table headers
-    doc.fontSize(10).font('Helvetica-Bold');
-    doc.text('No.', col1, tableTop);
-    doc.text('Article / Description', col2, tableTop);
-    doc.text('Days', col3, tableTop, { width: 60, align: 'right' });
-    doc.text('Unit price', col4, tableTop, { width: 70, align: 'right' });
-    doc.text('Total', col5, tableTop, { width: 70, align: 'right' });
-    
-    // Underline for headers
-    doc.moveTo(margin, tableTop + 15)
-       .lineTo(pageWidth - margin, tableTop + 15)
-       .stroke();
-
-    // Table row
-    const rowTop = tableTop + 25;
-    doc.fontSize(9).font('Helvetica');
-    doc.text('1', col1, rowTop);
-    
-const periodMonth = new Date(invoice.period_to).toLocaleDateString('en-US', { month: 'long' });
-
-// Different description based on invoice type
-if (invoice.invoice_type === 'client') {
-  // Client invoice: Show consultant name and CLIENT contract ID
-  const consultantName = `${invoice.consultant_first_name} ${invoice.consultant_last_name}`;
-  doc.text(`IT Services/${consultantName} - ${periodMonth}`, col2, rowTop, { width: 230 });
-  doc.text(`Contract: ${invoice.client_contract_id || 'N/A'}`, col2, rowTop + 12, { width: 230, fontSize: 8 });
-} else {
-  // Consultant invoice: Simple description with CONSULTANT contract ID
-  doc.text(`IT Services - ${periodMonth}`, col2, rowTop, { width: 230 });
-  doc.text(`Contract: ${invoice.consultant_contract_id || 'N/A'}`, col2, rowTop + 12, { width: 230, fontSize: 8 });
-}
-    doc.text(invoice.days_worked.toString(), col3, rowTop, { width: 60, align: 'right' });
-    doc.text(`€${parseFloat(invoice.daily_rate).toFixed(2)}`, col4, rowTop, { width: 70, align: 'right' });
-    doc.text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col5, rowTop, { width: 70, align: 'right' });
-
-    // VAT row (if enabled)
-    let summaryTop = rowTop + 50;
-    if (invoice.vat_enabled) {
-      doc.fontSize(10).font('Helvetica');
-      doc.text(`VAT ${parseFloat(invoice.vat_rate).toFixed(0)}%`, col4, summaryTop, { width: 70, align: 'right' });
-      doc.text(`€${parseFloat(invoice.vat_amount).toFixed(2)}`, col5, summaryTop, { width: 70, align: 'right' });
-      summaryTop += 25;
-    }
-
-    // Total (with line above)
-    doc.moveTo(col4, summaryTop - 5)
-       .lineTo(pageWidth - margin, summaryTop - 5)
-       .stroke();
-    
-    summaryTop += 10;
-    doc.fontSize(11).font('Helvetica-Bold');
-    doc.text('Total amount:', col4, summaryTop, { width: 70, align: 'right' });
-    doc.text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, col5, summaryTop, { width: 70, align: 'right' });
-
-    // Bank info
-    const bankTop = summaryTop + 60;
-    doc.fontSize(10).font('Helvetica-Bold').text('Please pay to:', margin, bankTop);
-    doc.fontSize(9).font('Helvetica');
-    doc.text(`Bank: ${fromInfo.iban ? (invoice.invoice_type === 'consultant' ? 'N/A' : invoice.bank_name || 'N/A') : 'N/A'}`, margin, bankTop + 20);
-    doc.text(`IBAN: ${fromInfo.iban || 'N/A'}`, margin, bankTop + 35);
-    doc.text(`SWIFT: ${fromInfo.swift || 'N/A'}`, margin, bankTop + 50);
-
-    doc.end();
-  } catch (error) {
-    console.error('Generate PDF error:', error);
     res.status(500).json({ error: error.message });
   }
 });
