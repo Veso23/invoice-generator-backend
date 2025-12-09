@@ -786,21 +786,24 @@ const clientInvoiceCount = parseInt(clientInvoiceCountResult.rows[0].count) + 1;
 const clientInvoiceNumber = `INV-${currentYear}-${companyPrefix}-${clientInvoiceCount.toString().padStart(3, '0')}`;
 
 // REPLACE IT WITH THIS:
-// ✅ Use contract's VAT settings (not company defaults)
-const vatEnabled = contract.vat_enabled === true;  // Explicit check for true
-const vatRate = contract.vat_rate || 0;  // Use contract rate or 0
-const vatDecimal = vatRate / 100;
+// ✅ CONSULTANT INVOICE: Always 0% VAT
+const consultantVatEnabled = false;
+const consultantVatRate = 0;
 
-// Calculate amounts for CONSULTANT invoice (purchase)
 const consultantSubtotal = contract.purchase_price * daysWorked;
-const consultantVAT = vatEnabled ? (consultantSubtotal * vatDecimal) : 0;  // ← Only if enabled
-const consultantTotal = consultantSubtotal + consultantVAT;
+const consultantVAT = 0;  // Always 0 for consultant invoices
+const consultantTotal = consultantSubtotal;
 
-// Calculate amounts for CLIENT invoice (sell)
+// ✅ CLIENT INVOICE: Use contract's VAT settings
+const clientVatEnabled = contract.vat_enabled === true;
+const clientVatRate = contract.vat_rate || 0;
+const clientVatDecimal = clientVatRate / 100;
+
 const clientSubtotal = contract.sell_price * daysWorked;
-const clientVAT = vatEnabled ? (clientSubtotal * vatDecimal) : 0;  // ← Only if enabled
+const clientVAT = clientVatEnabled ? (clientSubtotal * clientVatDecimal) : 0;
 const clientTotal = clientSubtotal + clientVAT;
 
+// Create BOTH invoices
 // Create BOTH invoices
 await pool.query(`
   INSERT INTO invoices 
@@ -808,13 +811,15 @@ await pool.query(`
    days_worked, daily_rate, subtotal, vat_rate, vat_amount, total_amount, vat_enabled, company_id, created_by, created_at)
   VALUES 
   ($1, $2, 'consultant', CURRENT_DATE, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW()),
-  ($14, $2, 'client', CURRENT_DATE, $3, $4, $5, $15, $16, $8, $17, $18, $11, $12, $13, NOW())
+  ($14, $2, 'client', CURRENT_DATE, $3, $4, $5, $15, $16, $17, $18, $19, $20, $12, $13, NOW())
 `, [
   consultantInvoiceNumber, contract.id, periodFrom, periodTo, daysWorked,
-  contract.purchase_price, consultantSubtotal, vatRate, consultantVAT, consultantTotal, 
-  vatEnabled,  // ← ADD THIS (position 11)
+  contract.purchase_price, consultantSubtotal, consultantVatRate, consultantVAT, consultantTotal, 
+  consultantVatEnabled,  // position 11 - false for consultant
   req.companyId, req.user.id,
-  clientInvoiceNumber, contract.sell_price, clientSubtotal, clientVAT, clientTotal
+  clientInvoiceNumber, contract.sell_price, clientSubtotal, 
+  clientVatRate, clientVAT, clientTotal,  // positions 17-19
+  clientVatEnabled  // position 20 - uses contract setting for client
 ]);
 
     // Mark timesheet as processed
