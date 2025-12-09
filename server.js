@@ -756,17 +756,20 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     const periodFrom = new Date(parseInt(year), parseInt(month) - 1, 1);
     const periodTo = new Date(parseInt(year), parseInt(month), 0);
 
-    // ✅ GENERATE CONSULTANT INVOICE NUMBER (per consultant)
-    // Format: INV-ConsultantName-001, INV-ConsultantName-002, etc.
-    const consultantName = `${consultant.first_name}${consultant.last_name}`.replace(/\s+/g, '');
-    const consultantInvoiceCountResult = await pool.query(`
-      SELECT COUNT(*) as count 
-      FROM invoices i
-      JOIN contracts c ON i.contract_id = c.id
-      WHERE c.consultant_id = $1 AND i.invoice_type = 'consultant'
-    `, [consultant.id]);
-    const consultantInvoiceCount = parseInt(consultantInvoiceCountResult.rows[0].count) + 1;
-    const consultantInvoiceNumber = `INV-${consultantName}-${consultantInvoiceCount.toString().padStart(3, '0')}`;
+// ✅ GENERATE CONSULTANT INVOICE NUMBER (per consultant, per company)
+// Format: INV-C8-VyaraManolova-001, INV-C8-VyaraManolova-002, etc.
+const consultantName = `${consultant.first_name}${consultant.last_name}`.replace(/\s+/g, '');
+const companyPrefix = `C${req.companyId}`;
+
+const consultantInvoiceCountResult = await pool.query(`
+  SELECT COUNT(*) as count 
+  FROM invoices i
+  JOIN contracts c ON i.contract_id = c.id
+  WHERE c.consultant_id = $1 AND i.invoice_type = 'consultant'
+`, [consultant.id]);
+
+const consultantInvoiceCount = parseInt(consultantInvoiceCountResult.rows[0].count) + 1;
+const consultantInvoiceNumber = `INV-${companyPrefix}-${consultantName}-${consultantInvoiceCount.toString().padStart(3, '0')}`;
 
     // ✅ GENERATE CLIENT INVOICE NUMBER (company-wide per year)
 // CLIENT INVOICE - Per company with prefix
