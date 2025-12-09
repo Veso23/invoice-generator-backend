@@ -1145,6 +1145,7 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
         timesheet_id: timesheet?.id || null,
         days_worked: timesheet?.pdf_days || timesheet?.email_days || null,
         deadline_date: deadline.toISOString().split('T')[0]
+        invoice_generated: timesheet?.invoice_generated || false
       };
     });
     
