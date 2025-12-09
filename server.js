@@ -769,17 +769,20 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     const consultantInvoiceNumber = `INV-${consultantName}-${consultantInvoiceCount.toString().padStart(3, '0')}`;
 
     // ✅ GENERATE CLIENT INVOICE NUMBER (company-wide per year)
-    // Format: INV-2025-001, INV-2025-002, etc.
-    const currentYear = new Date().getFullYear();
-    const clientInvoiceCountResult = await pool.query(`
-      SELECT COUNT(*) as count 
-      FROM invoices
-      WHERE invoice_type = 'client' 
-        AND company_id = $1
-        AND EXTRACT(YEAR FROM invoice_date) = $2
-    `, [req.companyId, currentYear]);
-    const clientInvoiceCount = parseInt(clientInvoiceCountResult.rows[0].count) + 1;
-    const clientInvoiceNumber = `INV-${currentYear}-${clientInvoiceCount.toString().padStart(3, '0')}`;
+// CLIENT INVOICE - Per company with prefix
+const currentYear = new Date().getFullYear();
+const companyPrefix = `C${req.companyId}`;
+
+const clientInvoiceCountResult = await pool.query(`
+  SELECT COUNT(*) as count 
+  FROM invoices
+  WHERE invoice_type = 'client' 
+    AND company_id = $1
+    AND EXTRACT(YEAR FROM invoice_date) = $2
+`, [req.companyId, currentYear]);
+
+const clientInvoiceCount = parseInt(clientInvoiceCountResult.rows[0].count) + 1;
+const clientInvoiceNumber = `INV-${currentYear}-${companyPrefix}-${clientInvoiceCount.toString().padStart(3, '0')}`;
 
 // Get company default VAT rate
 const companyResult = await pool.query(
