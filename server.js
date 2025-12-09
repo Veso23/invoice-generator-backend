@@ -756,7 +756,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     const periodFrom = new Date(parseInt(year), parseInt(month) - 1, 1);
     const periodTo = new Date(parseInt(year), parseInt(month), 0);
 
-/const companyPrefix = `C${req.companyId}`;
+const companyPrefix = `C${req.companyId}`;
 
 // ✅ GENERATE CONSULTANT INVOICE NUMBER (per consultant, per company)
 // Format: INV-C8-VyaraManolova-001, INV-C8-VyaraManolova-002, etc.
