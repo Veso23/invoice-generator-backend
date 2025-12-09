@@ -442,6 +442,8 @@ app.get('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res
         c.currency,
         c.status,
         c.notes,
+        c.vat_enabled,    -- ← Make sure these are here
+        c.vat_rate,       -- ← Make sure these are here
         c.company_id,
         c.created_at,
         c.updated_at,
@@ -496,16 +498,17 @@ app.get('/api/timesheets', authenticateToken, checkCompanyAccess, async (req, re
 app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const {
-      contractNumber,  // ← FROM USER INPUT
+      contractNumber,
       consultantId, clientId, fromDate, toDate,
-      purchasePrice, sellPrice
+      purchasePrice, sellPrice,
+      vatEnabled = false,  // ← Default to false (safe)
+      vatRate = null       // ← Default to null (safe)
     } = req.body;
 
     if (!contractNumber || !consultantId || !clientId || !fromDate || !toDate || !purchasePrice || !sellPrice) {
       return res.status(400).json({ error: 'All fields including contract number are required' });
     }
 
-    // Generate internal unique IDs (these can be auto-generated for database constraints)
     const timestamp = Date.now();
     const consultantContractId = `CONS-${timestamp}`;
     const clientContractId = `CLI-${timestamp}`;
@@ -513,19 +516,15 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
     const result = await pool.query(`
       INSERT INTO contracts 
       (contract_number, consultant_id, client_id, from_date, to_date, purchase_price, sell_price, 
-       consultant_contract_id, client_contract_id, company_id, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW()) 
+       consultant_contract_id, client_contract_id, vat_enabled, vat_rate, company_id, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW()) 
       RETURNING *
     `, [
-      contractNumber,  // ← USER'S NUMBER (e.g., "CNT-2025-001")
-      consultantId, 
-      clientId, 
-      fromDate, 
-      toDate, 
-      purchasePrice, 
-      sellPrice, 
-      consultantContractId,  // Internal only
-      clientContractId,      // Internal only
+      contractNumber, consultantId, clientId, fromDate, toDate, 
+      purchasePrice, sellPrice, 
+      consultantContractId, clientContractId,
+      vatEnabled,   // ← ADD
+      vatRate,      // ← ADD
       req.companyId
     ]);
 
@@ -540,7 +539,6 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
     }
   }
 });
-
 
 // Match timesheet to consultant
 app.put('/api/timesheets/:id/match', authenticateToken, checkCompanyAccess, async (req, res) => {
@@ -704,6 +702,8 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       return res.status(400).json({ error: 'Please match timesheet to consultant first' });
     }
 
+    
+
     // Get consultant
     const consultantResult = await pool.query(
       'SELECT * FROM consultants WHERE email = $1 AND company_id = $2',
@@ -785,36 +785,35 @@ const clientInvoiceCountResult = await pool.query(`
 const clientInvoiceCount = parseInt(clientInvoiceCountResult.rows[0].count) + 1;
 const clientInvoiceNumber = `INV-${currentYear}-${companyPrefix}-${clientInvoiceCount.toString().padStart(3, '0')}`;
 
-
-// Get company default VAT rate
-const companyResult = await pool.query(
-  'SELECT default_vat_rate FROM companies WHERE id = $1',
-  [req.companyId]
-);
-const vatRate = companyResult.rows[0]?.default_vat_rate || 21.00;
+// REPLACE IT WITH THIS:
+// ✅ Use contract's VAT settings (not company defaults)
+const vatEnabled = contract.vat_enabled === true;  // Explicit check for true
+const vatRate = contract.vat_rate || 0;  // Use contract rate or 0
 const vatDecimal = vatRate / 100;
 
 // Calculate amounts for CONSULTANT invoice (purchase)
 const consultantSubtotal = contract.purchase_price * daysWorked;
-const consultantVAT = consultantSubtotal * vatDecimal;  // ← CHANGED
+const consultantVAT = vatEnabled ? (consultantSubtotal * vatDecimal) : 0;  // ← Only if enabled
 const consultantTotal = consultantSubtotal + consultantVAT;
 
 // Calculate amounts for CLIENT invoice (sell)
 const clientSubtotal = contract.sell_price * daysWorked;
-const clientVAT = clientSubtotal * vatDecimal;  // ← CHANGED
+const clientVAT = vatEnabled ? (clientSubtotal * vatDecimal) : 0;  // ← Only if enabled
 const clientTotal = clientSubtotal + clientVAT;
 
 // Create BOTH invoices
 await pool.query(`
   INSERT INTO invoices 
   (invoice_number, contract_id, invoice_type, invoice_date, period_from, period_to,
-   days_worked, daily_rate, subtotal, vat_rate, vat_amount, total_amount, company_id, created_by, created_at)
+   days_worked, daily_rate, subtotal, vat_rate, vat_amount, total_amount, vat_enabled, company_id, created_by, created_at)
   VALUES 
-  ($1, $2, 'consultant', CURRENT_DATE, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW()),
-  ($13, $2, 'client', CURRENT_DATE, $3, $4, $5, $14, $15, $8, $16, $17, $11, $12, NOW())
+  ($1, $2, 'consultant', CURRENT_DATE, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW()),
+  ($14, $2, 'client', CURRENT_DATE, $3, $4, $5, $15, $16, $8, $17, $18, $11, $12, $13, NOW())
 `, [
   consultantInvoiceNumber, contract.id, periodFrom, periodTo, daysWorked,
-  contract.purchase_price, consultantSubtotal, vatRate, consultantVAT, consultantTotal, req.companyId, req.user.id,
+  contract.purchase_price, consultantSubtotal, vatRate, consultantVAT, consultantTotal, 
+  vatEnabled,  // ← ADD THIS (position 11)
+  req.companyId, req.user.id,
   clientInvoiceNumber, contract.sell_price, clientSubtotal, clientVAT, clientTotal
 ]);
 
