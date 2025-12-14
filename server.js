@@ -175,14 +175,6 @@ const authenticateToken = async (req, res, next) => {
   if (!token) {
     return res.status(401).json({ error: 'Access token required' });
   }
-  
-  // Admin-only middleware
-const requireAdmin = (req, res, next) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Admin access required' });
-  }
-  next();
-};
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
@@ -198,6 +190,14 @@ const requireAdmin = (req, res, next) => {
     console.error('Auth error:', error);
     return res.status(403).json({ error: 'Invalid token' });
   }
+};
+
+// ✅ Admin-only middleware - MUST BE OUTSIDE authenticateToken
+const requireAdmin = (req, res, next) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
 };
 
 // Company middleware
