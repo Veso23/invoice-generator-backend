@@ -175,6 +175,14 @@ const authenticateToken = async (req, res, next) => {
   if (!token) {
     return res.status(401).json({ error: 'Access token required' });
   }
+  
+  // Admin-only middleware
+const requireAdmin = (req, res, next) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
+};
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
@@ -225,7 +233,6 @@ app.get('/', (req, res) => {
   });
 });
 
-// Auth Routes
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { email, password, firstName, lastName, companyName } = req.body;
@@ -256,10 +263,10 @@ app.post('/api/auth/register', async (req, res) => {
       );
       const companyId = companyResult.rows[0].id;
 
-      // Create user
+      // Create user - FIRST USER IS ALWAYS ADMIN
       const userResult = await client.query(
-        'INSERT INTO users (email, password_hash, first_name, last_name, company_id, role, created_at) VALUES ($1, $2, $3, $4, $5, $6, NOW()) RETURNING id, email, first_name, last_name, role, company_id',
-        [email, hashedPassword, firstName, lastName, companyId, 'admin']
+        'INSERT INTO users (email, password_hash, first_name, last_name, company_id, role, active, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW()) RETURNING id, email, first_name, last_name, role, company_id, active',
+        [email, hashedPassword, firstName, lastName, companyId, 'admin', true] // ✅ Always 'admin'
       );
 
       await client.query('COMMIT');
@@ -280,7 +287,8 @@ app.post('/api/auth/register', async (req, res) => {
           firstName: user.first_name,
           lastName: user.last_name,
           role: user.role,
-          companyId: user.company_id
+          companyId: user.company_id,
+          active: user.active
         }
       });
     } catch (error) {
@@ -311,6 +319,11 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
+    // ✅ Check if user is active
+    if (!user.active) {
+      return res.status(403).json({ error: 'Account has been disabled. Contact your administrator.' });
+    }
+
     // Update last login
     await pool.query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id]);
 
@@ -328,7 +341,8 @@ app.post('/api/auth/login', async (req, res) => {
         firstName: user.first_name,
         lastName: user.last_name,
         role: user.role,
-        companyId: user.company_id
+        companyId: user.company_id,
+        active: user.active
       }
     });
   } catch (error) {
@@ -351,7 +365,7 @@ app.get('/api/consultants', authenticateToken, checkCompanyAccess, async (req, r
   }
 });
 
-app.post('/api/consultants', authenticateToken, checkCompanyAccess, async (req, res) => {
+app.post('/api/consultants', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
     const {
       firstName, lastName, companyName, companyAddress,
@@ -395,7 +409,7 @@ app.get('/api/clients', authenticateToken, checkCompanyAccess, async (req, res) 
   }
 });
 
-app.post('/api/clients', authenticateToken, checkCompanyAccess, async (req, res) => {
+app.post('/api/clients', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
     const {
       firstName, lastName, companyName, companyAddress,
@@ -497,7 +511,7 @@ app.get('/api/timesheets', authenticateToken, checkCompanyAccess, async (req, re
 });
 
 
-app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res) => {
+app.post('/api/contracts', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
     const {
       contractNumber,
@@ -1000,7 +1014,7 @@ app.get('/api/company/settings', authenticateToken, checkCompanyAccess, async (r
 });
 
 // Update company settings
-app.put('/api/company/settings', authenticateToken, checkCompanyAccess, async (req, res) => {
+app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
     const { 
       name, address, representative_name, timesheet_deadline_day, 
@@ -1581,6 +1595,172 @@ app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, 
   } catch (error) {
     console.error('Send email error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// USER MANAGEMENT ENDPOINTS (Admin Only)
+// ============================================
+
+// Get all users in company (Admin only)
+app.get('/api/users', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT u.id, u.email, u.first_name, u.last_name, u.role, u.active, u.created_at, u.last_login,
+             creator.first_name as created_by_first_name, creator.last_name as created_by_last_name
+      FROM users u
+      LEFT JOIN users creator ON u.created_by = creator.id
+      WHERE u.company_id = $1
+      ORDER BY u.created_at DESC
+    `, [req.companyId]);
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create operator account (Admin only)
+app.post('/api/users', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { email, password, firstName, lastName } = req.body;
+
+    if (!email || !password || !firstName || !lastName) {
+      return res.status(400).json({ error: 'All fields are required' });
+    }
+
+    // Check if email already exists
+    const existingUser = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    if (existingUser.rows.length > 0) {
+      return res.status(400).json({ error: 'Email already exists' });
+    }
+
+    // Hash password
+    const saltRounds = 12;
+    const hashedPassword = await bcrypt.hash(password, saltRounds);
+
+    // Create operator
+    const result = await pool.query(`
+      INSERT INTO users 
+      (email, password_hash, first_name, last_name, company_id, role, active, created_by, created_at)
+      VALUES ($1, $2, $3, $4, $5, 'operator', true, $6, NOW())
+      RETURNING id, email, first_name, last_name, role, active, created_at
+    `, [email, hashedPassword, firstName, lastName, req.companyId, req.user.id]);
+
+    res.status(201).json({
+      message: 'Operator created successfully',
+      user: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Create operator error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Toggle user active status (Admin only)
+app.put('/api/users/:id/toggle-active', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check user belongs to same company
+    const userCheck = await pool.query(
+      'SELECT * FROM users WHERE id = $1 AND company_id = $2',
+      [id, req.companyId]
+    );
+
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userCheck.rows[0];
+
+    // Prevent admin from disabling themselves
+    if (user.id === req.user.id) {
+      return res.status(400).json({ error: 'You cannot disable your own account' });
+    }
+
+    // Toggle active status
+    const result = await pool.query(
+      'UPDATE users SET active = NOT active, updated_at = NOW() WHERE id = $1 RETURNING *',
+      [id]
+    );
+
+    res.json({
+      message: `User ${result.rows[0].active ? 'enabled' : 'disabled'} successfully`,
+      user: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Toggle user active error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Delete user (Admin only)
+app.delete('/api/users/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check user belongs to same company
+    const userCheck = await pool.query(
+      'SELECT * FROM users WHERE id = $1 AND company_id = $2',
+      [id, req.companyId]
+    );
+
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userCheck.rows[0];
+
+    // Prevent admin from deleting themselves
+    if (user.id === req.user.id) {
+      return res.status(400).json({ error: 'You cannot delete your own account' });
+    }
+
+    // Delete user
+    await pool.query('DELETE FROM users WHERE id = $1', [id]);
+
+    res.json({ message: 'User deleted successfully' });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Change password (Both roles)
+app.put('/api/auth/change-password', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current and new passwords are required' });
+    }
+
+    // Get user
+    const result = await pool.query('SELECT * FROM users WHERE id = $1', [req.user.id]);
+    const user = result.rows[0];
+
+    // Verify current password
+    const isValid = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!isValid) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // Hash new password
+    const saltRounds = 12;
+    const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+
+    // Update password
+    await pool.query(
+      'UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2',
+      [hashedPassword, req.user.id]
+    );
+
+    res.json({ message: 'Password changed successfully' });
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
