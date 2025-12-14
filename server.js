@@ -442,8 +442,10 @@ app.get('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res
         c.currency,
         c.status,
         c.notes,
-        c.vat_enabled,    -- ← Make sure these are here
-        c.vat_rate,       -- ← Make sure these are here
+        c.vat_enabled,    -- Client VAT enabled
+        c.vat_rate,       -- Client VAT rate
+        c.consultant_vat_enabled,    -- ✅ NEW
+        c.consultant_vat_rate,       -- ✅ NEW
         c.company_id,
         c.created_at,
         c.updated_at,
@@ -501,8 +503,10 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
       contractNumber,
       consultantId, clientId, fromDate, toDate,
       purchasePrice, sellPrice,
-      vatEnabled = false,  // ← Default to false (safe)
-      vatRate = null       // ← Default to null (safe)
+      vatEnabled = false,           // Client VAT enabled
+      vatRate = null,                // Client VAT rate
+      consultantVatEnabled = false,  // ✅ NEW - Consultant VAT enabled
+      consultantVatRate = null       // ✅ NEW - Consultant VAT rate
     } = req.body;
 
     if (!contractNumber || !consultantId || !clientId || !fromDate || !toDate || !purchasePrice || !sellPrice) {
@@ -516,15 +520,16 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
     const result = await pool.query(`
       INSERT INTO contracts 
       (contract_number, consultant_id, client_id, from_date, to_date, purchase_price, sell_price, 
-       consultant_contract_id, client_contract_id, vat_enabled, vat_rate, company_id, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW()) 
+       consultant_contract_id, client_contract_id, vat_enabled, vat_rate, 
+       consultant_vat_enabled, consultant_vat_rate, company_id, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW()) 
       RETURNING *
     `, [
       contractNumber, consultantId, clientId, fromDate, toDate, 
       purchasePrice, sellPrice, 
       consultantContractId, clientContractId,
-      vatEnabled,   // ← ADD
-      vatRate,      // ← ADD
+      vatEnabled, vatRate,                    // Client VAT
+      consultantVatEnabled, consultantVatRate, // ✅ NEW - Consultant VAT
       req.companyId
     ]);
 
@@ -539,7 +544,6 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
     }
   }
 });
-
 // Match timesheet to consultant
 app.put('/api/timesheets/:id/match', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
@@ -786,22 +790,23 @@ const clientInvoiceCount = parseInt(clientInvoiceCountResult.rows[0].count) + 1;
 const clientInvoiceNumber = `INV-${currentYear}-${companyPrefix}-${clientInvoiceCount.toString().padStart(3, '0')}`;
 
 // REPLACE IT WITH THIS:
-// ✅ CONSULTANT INVOICE: Always 0% VAT
-const consultantVatEnabled = false;
-const consultantVatRate = 0;
+// ✅ CONSULTANT INVOICE: Use contract's consultant VAT settings
+const consultantVatEnabled = contract.consultant_vat_enabled === true;
+const consultantVatRate = contract.consultant_vat_rate || 0;
+const consultantVatDecimal = consultantVatRate / 100;
 
-const consultantSubtotal = contract.purchase_price * daysWorked;
-const consultantVAT = 0;  // Always 0 for consultant invoices
-const consultantTotal = consultantSubtotal;
+const consultantSubtotal = Math.round(contract.purchase_price * daysWorked * 100) / 100;
+const consultantVAT = consultantVatEnabled ? Math.round(consultantSubtotal * consultantVatDecimal * 100) / 100 : 0;
+const consultantTotal = Math.round((consultantSubtotal + consultantVAT) * 100) / 100;
 
-// ✅ CLIENT INVOICE: Use contract's VAT settings
+// ✅ CLIENT INVOICE: Use contract's client VAT settings
 const clientVatEnabled = contract.vat_enabled === true;
 const clientVatRate = contract.vat_rate || 0;
 const clientVatDecimal = clientVatRate / 100;
 
 const clientSubtotal = Math.round(contract.sell_price * daysWorked * 100) / 100;
-const clientVAT = clientVatEnabled ? Math.round(clientSubtotal * clientVatDecimal * 100) / 100 : 0;  // ✅ ROUNDED
-const clientTotal = Math.round((clientSubtotal + clientVAT) * 100) / 100;  // ✅ ROUNDED
+const clientVAT = clientVatEnabled ? Math.round(clientSubtotal * clientVatDecimal * 100) / 100 : 0;
+const clientTotal = Math.round((clientSubtotal + clientVAT) * 100) / 100;
 
 // Create BOTH invoices
 // Create BOTH invoices
