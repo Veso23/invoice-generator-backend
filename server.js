@@ -645,7 +645,7 @@ const contractResult = await pool.query(`
 const vatRate = contract.default_vat_rate || 21.00;  // ← ADD THIS
 const vatDecimal = vatRate / 100;
 
-cconst consultantSubtotal = Math.round(contract.purchase_price * days * 100) / 100;
+const consultantSubtotal = Math.round(contract.purchase_price * days * 100) / 100;
 const consultantVAT = Math.round(consultantSubtotal * vatDecimal * 100) / 100;  // ✅ ROUNDED
 const consultantTotal = Math.round((consultantSubtotal + consultantVAT) * 100) / 100;  // ✅ ROUNDED
 
