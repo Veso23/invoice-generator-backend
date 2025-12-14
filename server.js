@@ -503,15 +503,19 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
       contractNumber,
       consultantId, clientId, fromDate, toDate,
       purchasePrice, sellPrice,
-      vatEnabled = false,           // Client VAT enabled
-      vatRate = null,                // Client VAT rate
-      consultantVatEnabled = false,  // ✅ NEW - Consultant VAT enabled
-      consultantVatRate = null       // ✅ NEW - Consultant VAT rate
+      vatEnabled = false,
+      vatRate,                      // Don't set default here
+      consultantVatEnabled = false,
+      consultantVatRate            // Don't set default here
     } = req.body;
 
     if (!contractNumber || !consultantId || !clientId || !fromDate || !toDate || !purchasePrice || !sellPrice) {
       return res.status(400).json({ error: 'All fields including contract number are required' });
     }
+
+    // ✅ SANITIZE: Convert empty strings to null for numeric fields
+    const sanitizedVatRate = vatRate === '' || vatRate === undefined ? null : parseFloat(vatRate);
+    const sanitizedConsultantVatRate = consultantVatRate === '' || consultantVatRate === undefined ? null : parseFloat(consultantVatRate);
 
     const timestamp = Date.now();
     const consultantContractId = `CONS-${timestamp}`;
@@ -528,8 +532,8 @@ app.post('/api/contracts', authenticateToken, checkCompanyAccess, async (req, re
       contractNumber, consultantId, clientId, fromDate, toDate, 
       purchasePrice, sellPrice, 
       consultantContractId, clientContractId,
-      vatEnabled, vatRate,                    // Client VAT
-      consultantVatEnabled, consultantVatRate, // ✅ NEW - Consultant VAT
+      vatEnabled, sanitizedVatRate,                    // ✅ Use sanitized value
+      consultantVatEnabled, sanitizedConsultantVatRate, // ✅ Use sanitized value
       req.companyId
     ]);
 
