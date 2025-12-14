@@ -645,13 +645,13 @@ const contractResult = await pool.query(`
 const vatRate = contract.default_vat_rate || 21.00;  // ← ADD THIS
 const vatDecimal = vatRate / 100;
 
-const consultantSubtotal = contract.purchase_price * days;
-const consultantVAT = consultantSubtotal * vatDecimal;  // ← CHANGED
-const consultantTotal = consultantSubtotal + consultantVAT;
+cconst consultantSubtotal = Math.round(contract.purchase_price * days * 100) / 100;
+const consultantVAT = Math.round(consultantSubtotal * vatDecimal * 100) / 100;  // ✅ ROUNDED
+const consultantTotal = Math.round((consultantSubtotal + consultantVAT) * 100) / 100;  // ✅ ROUNDED
 
-const clientSubtotal = contract.sell_price * days;
-const clientVAT = clientSubtotal * vatDecimal;  // ← CHANGED
-const clientTotal = clientSubtotal + clientVAT;
+const clientSubtotal = Math.round(contract.sell_price * days * 100) / 100;
+const clientVAT = Math.round(clientSubtotal * vatDecimal * 100) / 100;  // ✅ ROUNDED
+const clientTotal = Math.round((clientSubtotal + clientVAT) * 100) / 100;  // ✅ ROUNDED
 
 // Create consultant invoice
 const consultantInvoiceResult = await pool.query(`
@@ -799,9 +799,9 @@ const clientVatEnabled = contract.vat_enabled === true;
 const clientVatRate = contract.vat_rate || 0;
 const clientVatDecimal = clientVatRate / 100;
 
-const clientSubtotal = contract.sell_price * daysWorked;
-const clientVAT = clientVatEnabled ? (clientSubtotal * clientVatDecimal) : 0;
-const clientTotal = clientSubtotal + clientVAT;
+const clientSubtotal = Math.round(contract.sell_price * daysWorked * 100) / 100;
+const clientVAT = clientVatEnabled ? Math.round(clientSubtotal * clientVatDecimal * 100) / 100 : 0;  // ✅ ROUNDED
+const clientTotal = Math.round((clientSubtotal + clientVAT) * 100) / 100;  // ✅ ROUNDED
 
 // Create BOTH invoices
 // Create BOTH invoices
