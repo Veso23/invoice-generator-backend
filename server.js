@@ -395,6 +395,82 @@ app.post('/api/consultants', authenticateToken, requireAdmin, checkCompanyAccess
   }
 });
 
+// Update consultant (Admin only)
+app.put('/api/consultants/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      firstName, lastName, companyName, companyAddress,
+      companyVAT, iban, swift, phone, email, consultantContractId
+    } = req.body;
+
+    // Verify consultant belongs to company
+    const checkResult = await pool.query(
+      'SELECT id FROM consultants WHERE id = $1 AND company_id = $2',
+      [id, req.companyId]
+    );
+
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Consultant not found' });
+    }
+
+    const result = await pool.query(
+      `UPDATE consultants 
+       SET first_name = $1, last_name = $2, company_name = $3, company_address = $4,
+           company_vat = $5, iban = $6, swift = $7, phone = $8, email = $9,
+           consultant_contract_id = $10, updated_at = NOW()
+       WHERE id = $11 AND company_id = $12
+       RETURNING *`,
+      [firstName, lastName, companyName, companyAddress, companyVAT, iban, swift, 
+       phone, email, consultantContractId, id, req.companyId]
+    );
+
+    res.json({ message: 'Consultant updated successfully', consultant: result.rows[0] });
+  } catch (error) {
+    console.error('Update consultant error:', error);
+    if (error.code === '23505') {
+      res.status(400).json({ error: 'VAT number or Contract ID already exists' });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// Delete consultant (Admin only)
+app.delete('/api/consultants/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if consultant has contracts
+    const contractCheck = await pool.query(
+      'SELECT COUNT(*) as count FROM contracts WHERE consultant_id = $1',
+      [id]
+    );
+
+    if (parseInt(contractCheck.rows[0].count) > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete consultant with existing contracts. Delete contracts first.' 
+      });
+    }
+
+    // Verify consultant belongs to company
+    const checkResult = await pool.query(
+      'SELECT id FROM consultants WHERE id = $1 AND company_id = $2',
+      [id, req.companyId]
+    );
+
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Consultant not found' });
+    }
+
+    await pool.query('DELETE FROM consultants WHERE id = $1', [id]);
+    res.json({ message: 'Consultant deleted successfully' });
+  } catch (error) {
+    console.error('Delete consultant error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Client Routes
 app.get('/api/clients', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
@@ -436,6 +512,82 @@ app.post('/api/clients', authenticateToken, requireAdmin, checkCompanyAccess, as
     } else {
       res.status(500).json({ error: 'Internal server error' });
     }
+  }
+});
+
+// Update client (Admin only)
+app.put('/api/clients/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      firstName, lastName, companyName, companyAddress,
+      companyVAT, iban, swift, phone, email, clientContractId
+    } = req.body;
+
+    // Verify client belongs to company
+    const checkResult = await pool.query(
+      'SELECT id FROM clients WHERE id = $1 AND company_id = $2',
+      [id, req.companyId]
+    );
+
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
+    const result = await pool.query(
+      `UPDATE clients 
+       SET first_name = $1, last_name = $2, company_name = $3, company_address = $4,
+           company_vat = $5, iban = $6, swift = $7, phone = $8, email = $9,
+           client_contract_id = $10, updated_at = NOW()
+       WHERE id = $11 AND company_id = $12
+       RETURNING *`,
+      [firstName, lastName, companyName, companyAddress, companyVAT, iban, swift, 
+       phone, email, clientContractId, id, req.companyId]
+    );
+
+    res.json({ message: 'Client updated successfully', client: result.rows[0] });
+  } catch (error) {
+    console.error('Update client error:', error);
+    if (error.code === '23505') {
+      res.status(400).json({ error: 'VAT number or Contract ID already exists' });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// Delete client (Admin only)
+app.delete('/api/clients/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if client has contracts
+    const contractCheck = await pool.query(
+      'SELECT COUNT(*) as count FROM contracts WHERE client_id = $1',
+      [id]
+    );
+
+    if (parseInt(contractCheck.rows[0].count) > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete client with existing contracts. Delete contracts first.' 
+      });
+    }
+
+    // Verify client belongs to company
+    const checkResult = await pool.query(
+      'SELECT id FROM clients WHERE id = $1 AND company_id = $2',
+      [id, req.companyId]
+    );
+
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
+    await pool.query('DELETE FROM clients WHERE id = $1', [id]);
+    res.json({ message: 'Client deleted successfully' });
+  } catch (error) {
+    console.error('Delete client error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -560,6 +712,87 @@ app.post('/api/contracts', authenticateToken, requireAdmin, checkCompanyAccess, 
     } else {
       res.status(500).json({ error: error.message });
     }
+  }
+});
+
+// Update contract (Admin only)
+app.put('/api/contracts/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      contractNumber, consultantId, clientId, fromDate, toDate,
+      purchasePrice, sellPrice, vatEnabled = false, vatRate,
+      consultantVatEnabled = false, consultantVatRate
+    } = req.body;
+
+    // Verify contract belongs to company
+    const checkResult = await pool.query(
+      'SELECT id FROM contracts WHERE id = $1 AND company_id = $2',
+      [id, req.companyId]
+    );
+
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Contract not found' });
+    }
+
+    // Sanitize VAT rates
+    const sanitizedVatRate = vatRate === '' || vatRate === undefined ? null : parseFloat(vatRate);
+    const sanitizedConsultantVatRate = consultantVatRate === '' || consultantVatRate === undefined ? null : parseFloat(consultantVatRate);
+
+    const result = await pool.query(
+      `UPDATE contracts 
+       SET contract_number = $1, consultant_id = $2, client_id = $3, from_date = $4, to_date = $5,
+           purchase_price = $6, sell_price = $7, vat_enabled = $8, vat_rate = $9,
+           consultant_vat_enabled = $10, consultant_vat_rate = $11, updated_at = NOW()
+       WHERE id = $12 AND company_id = $13
+       RETURNING *`,
+      [contractNumber, consultantId, clientId, fromDate, toDate, purchasePrice, sellPrice,
+       vatEnabled, sanitizedVatRate, consultantVatEnabled, sanitizedConsultantVatRate, id, req.companyId]
+    );
+
+    res.json({ message: 'Contract updated successfully', contract: result.rows[0] });
+  } catch (error) {
+    console.error('Update contract error:', error);
+    if (error.code === '23505') {
+      res.status(400).json({ error: 'Contract number already exists' });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// Delete contract (Admin only)
+app.delete('/api/contracts/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if contract has invoices
+    const invoiceCheck = await pool.query(
+      'SELECT COUNT(*) as count FROM invoices WHERE contract_id = $1',
+      [id]
+    );
+
+    if (parseInt(invoiceCheck.rows[0].count) > 0) {
+      return res.status(400).json({ 
+        error: 'Cannot delete contract with existing invoices. Delete invoices first.' 
+      });
+    }
+
+    // Verify contract belongs to company
+    const checkResult = await pool.query(
+      'SELECT id FROM contracts WHERE id = $1 AND company_id = $2',
+      [id, req.companyId]
+    );
+
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Contract not found' });
+    }
+
+    await pool.query('DELETE FROM contracts WHERE id = $1', [id]);
+    res.json({ message: 'Contract deleted successfully' });
+  } catch (error) {
+    console.error('Delete contract error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 // Match timesheet to consultant
