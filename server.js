@@ -1360,104 +1360,101 @@ app.get('/api/timesheets/all', authenticateToken, checkCompanyAccess, async (req
 });
 
 // Get timesheet status for all active consultants
+// GET timesheet status
 app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
-    // Get company deadline setting
-    const companyResult = await pool.query(
+    // Get company settings for deadline
+    const settingsResult = await pool.query(
       'SELECT timesheet_deadline_day FROM companies WHERE id = $1',
       [req.companyId]
     );
-    const deadlineDay = companyResult.rows[0]?.timesheet_deadline_day || 15;
-        
-    // Get all consultants with active contracts
-    const consultantsResult = await pool.query(`
-      SELECT DISTINCT
-        cons.id,
-        cons.first_name,
-        cons.last_name,
-        cons.company_name,
-        cons.email
-      FROM consultants cons
-      JOIN contracts c ON c.consultant_id = cons.id
-      WHERE c.status = 'active' AND cons.company_id = $1
-      ORDER BY cons.first_name, cons.last_name
-    `, [req.companyId]);
     
-    // Calculate status for each consultant
+    const deadlineDay = settingsResult.rows[0]?.timesheet_deadline_day || 15;
+    
+    // Determine which month we're checking
     const now = new Date();
-    const currentMonth = now.getMonth(); // 0-11
-    const currentYear = now.getFullYear();
+    const currentDay = now.getDate();
+    const checkingDate = currentDay <= deadlineDay 
+      ? new Date(now.getFullYear(), now.getMonth() - 1, 1) // Check previous month
+      : new Date(now.getFullYear(), now.getMonth(), 1);     // Check current month
     
-    // We're checking for LAST month's timesheet
-    let checkMonth = currentMonth - 1;
-    let checkYear = currentYear;
-    if (checkMonth < 0) {
-      checkMonth = 11; // December
-      checkYear -= 1;
-    }
+    const checkingMonth = checkingDate.toLocaleDateString('en-US', { month: 'long' });
+    const checkingYear = checkingDate.getFullYear();
     
-    // Calculate deadline date (e.g., October 15 for September timesheets)
-    const deadlineMonth = currentMonth;
-    const deadlineYear = currentYear;
-    const deadline = new Date(deadlineYear, deadlineMonth, deadlineDay);
+    // Calculate deadline date
+    const deadlineDate = new Date(checkingYear, checkingDate.getMonth(), deadlineDay);
+    const isOverdue = now > deadlineDate;
     
-    // Month names for display
-    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-                       'July', 'August', 'September', 'October', 'November', 'December'];
-    const checkingMonthName = monthNames[checkMonth];
+    // Get all consultants in active contracts
+    const consultantsResult = await pool.query(
+      `SELECT DISTINCT 
+        c.id,
+        c.first_name,
+        c.last_name,
+        c.company_name,
+        c.email
+       FROM consultants c
+       INNER JOIN contracts ct ON c.id = ct.consultant_id
+       WHERE c.company_id = $1 
+       AND ct.status = 'active'
+       ORDER BY c.last_name, c.first_name`,
+      [req.companyId]
+    );
     
-    // Get all timesheets for the month we're checking
-    const timesheetsResult = await pool.query(`
-  SELECT sender_email, month, pdf_days, email_days, created_at
-  FROM automation_logs
-  WHERE company_id = $1 OR company_id IS NULL
-`, [req.companyId]);
+    // Get all timesheets (including those with NULL month)
+    const timesheetsResult = await pool.query(
+      `SELECT * FROM automation_logs 
+       WHERE company_id = $1 
+       ORDER BY created_at DESC`,
+      [req.companyId]
+    );
     
-    // Build status for each consultant
-    const consultantStatuses = consultantsResult.rows.map(consultant => {
-      // Find timesheet for this consultant for the checking month
+    const consultants = consultantsResult.rows.map(consultant => {
+      // Find matching timesheet - check both actual month AND estimated month
       const timesheet = timesheetsResult.rows.find(ts => {
         if (ts.sender_email !== consultant.email) return false;
         
-        // Check if month matches
-        const tsMonth = ts.month?.toLowerCase();
-        return tsMonth === checkingMonthName.toLowerCase();
+        // If month is set in PDF, match exactly
+        if (ts.month) {
+          return ts.month.toLowerCase() === checkingMonth.toLowerCase();
+        }
+        
+        // If month is NULL, estimate from created_at
+        const createdDate = new Date(ts.created_at);
+        const estimatedMonth = createdDate.toLocaleDateString('en-US', { month: 'long' });
+        return estimatedMonth.toLowerCase() === checkingMonth.toLowerCase();
       });
       
-      let status, statusText;
+      let status;
       if (timesheet) {
-        status = 'received'; // GREEN
-        statusText = 'Received';
-      } else if (now < deadline) {
-        status = 'waiting'; // YELLOW
-        statusText = 'Waiting';
+        status = 'received';
+      } else if (isOverdue) {
+        status = 'overdue';
       } else {
-        status = 'overdue'; // RED
-        statusText = 'Overdue';
+        status = 'waiting';
       }
       
       return {
         ...consultant,
-        checking_month: checkingMonthName,
-        checking_year: checkYear,
         status,
-        status_text: statusText,
-        timesheet_id: timesheet?.id || null,
-        days_worked: timesheet?.pdf_days || timesheet?.email_days || null,
-        deadline_date: deadline.toISOString().split('T')[0],
-        invoice_generated: timesheet?.invoice_generated || false
+        checking_month: checkingMonth,
+        checking_year: checkingYear,
+        has_timesheet: !!timesheet,
+        timesheet_processed: timesheet?.month ? true : false // Track if AI processed
       };
     });
     
     res.json({
+      checking_month: checkingMonth,
+      checking_year: checkingYear,
       deadline_day: deadlineDay,
-      checking_month: checkingMonthName,
-      checking_year: checkYear,
-      consultants: consultantStatuses
+      deadline_date: deadlineDate.toISOString(),
+      is_overdue: isOverdue,
+      consultants
     });
     
   } catch (error) {
-    console.error('Get timesheet status error:', error);
+    console.error('Timesheet status error:', error);
     res.status(500).json({ error: error.message });
   }
 });
