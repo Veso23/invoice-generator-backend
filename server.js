@@ -960,9 +960,8 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     
     console.log('=== DETAILED DEBUG ===');
     console.log('Timesheet ID:', id);
-    console.log('Sender email RAW:', JSON.stringify(timesheet.sender_email));
-    console.log('Sender email LENGTH:', timesheet.sender_email?.length);
-    console.log('User company ID:', req.user.companyId);
+    console.log('Sender email:', timesheet.sender_email);
+    console.log('User company ID:', req.companyId);  // ✅ CHANGED
     
     // Must have approved days
     if (!timesheet.pdf_days && !timesheet.email_days) {
@@ -974,42 +973,26 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       return res.status(400).json({ error: 'Please match timesheet to consultant first' });
     }
     
-    // ✅ NORMALIZE: Trim and lowercase the email
+    // Normalize email
     const normalizedEmail = timesheet.sender_email.trim().toLowerCase();
-    console.log('Normalized email:', normalizedEmail);
     
-    // ✅ CASE-INSENSITIVE SEARCH with TRIM
+    // Find consultant
     const consultantResult = await pool.query(
       `SELECT * FROM consultants 
        WHERE LOWER(TRIM(email)) = $1 
        AND company_id = $2`,
-      [normalizedEmail, req.user.companyId]
+      [normalizedEmail, req.companyId]  // ✅ CHANGED
     );
     
     console.log('Consultants found:', consultantResult.rows.length);
     
     if (consultantResult.rows.length === 0) {
-      // Debug: Show ALL consultants in this company
-      const allConsultants = await pool.query(
-        'SELECT id, email, company_id FROM consultants WHERE company_id = $1',
-        [req.user.companyId]
-      );
-      console.log('All consultants in company:', allConsultants.rows);
-      
-      // Check if email exists in ANY company
-      const anyCompany = await pool.query(
-        'SELECT id, email, company_id FROM consultants WHERE LOWER(TRIM(email)) = $1',
-        [normalizedEmail]
-      );
-      console.log('Email found in other companies:', anyCompany.rows);
-      
       return res.status(404).json({ 
-        error: `Consultant not found. Email searched: "${normalizedEmail}", Your company: ${req.user.companyId}. Check backend logs for details.`
+        error: `Consultant not found with email: ${normalizedEmail} in company ${req.companyId}`  // ✅ CHANGED
       });
     }
     
     const consultant = consultantResult.rows[0];
-    console.log('✅ Consultant found:', consultant.id, consultant.email);
     
     // Find active contract
     const contractResult = await pool.query(
@@ -1019,10 +1002,8 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
        AND status = 'active'
        ORDER BY created_at DESC 
        LIMIT 1`,
-      [consultant.id, req.user.companyId]
+      [consultant.id, req.companyId]  // ✅ CHANGED
     );
-    
-    console.log('Contracts found:', contractResult.rows.length);
     
     if (contractResult.rows.length === 0) {
       return res.status(400).json({ error: 'No active contract found for this consultant' });
@@ -1043,7 +1024,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     // Generate invoice number
     const invoiceCount = await pool.query(
       'SELECT COUNT(*) FROM invoices WHERE company_id = $1',
-      [req.user.companyId]
+      [req.companyId]  // ✅ CHANGED
     );
     const invoiceNumber = `INV-${year}-${String(parseInt(invoiceCount.rows[0].count) + 1).padStart(4, '0')}`;
     
@@ -1063,7 +1044,8 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING *`,
       [
-        req.user.companyId, contract.id, `${invoiceNumber}-C`,
+        req.companyId,  // ✅ CHANGED
+        contract.id, `${invoiceNumber}-C`,
         periodFrom, periodTo, daysWorked, consultantDailyRate,
         consultantSubtotal, consultantVatRate, contract.consultant_vat_enabled,
         consultantTotal, 'consultant', 'draft'
@@ -1086,7 +1068,8 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING *`,
       [
-        req.user.companyId, contract.id, `${invoiceNumber}-CL`,
+        req.companyId,  // ✅ CHANGED
+        contract.id, `${invoiceNumber}-CL`,
         periodFrom, periodTo, daysWorked, clientDailyRate,
         clientSubtotal, clientVatRate, contract.vat_enabled,
         clientTotal, 'client', 'draft'
@@ -1112,6 +1095,8 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     res.status(500).json({ error: error.message });
   }
 });
+
+
 // Get all invoices
 app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
