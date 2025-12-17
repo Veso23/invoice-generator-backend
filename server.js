@@ -958,11 +958,6 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     
     const timesheet = timesheetResult.rows[0];
     
-    console.log('=== DETAILED DEBUG ===');
-    console.log('Timesheet ID:', id);
-    console.log('Sender email:', timesheet.sender_email);
-    console.log('User company ID:', req.companyId);  // ✅ CHANGED
-    
     // Must have approved days
     if (!timesheet.pdf_days && !timesheet.email_days) {
       return res.status(400).json({ error: 'No days found in timesheet' });
@@ -981,14 +976,12 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       `SELECT * FROM consultants 
        WHERE LOWER(TRIM(email)) = $1 
        AND company_id = $2`,
-      [normalizedEmail, req.companyId]  // ✅ CHANGED
+      [normalizedEmail, req.companyId]
     );
-    
-    console.log('Consultants found:', consultantResult.rows.length);
     
     if (consultantResult.rows.length === 0) {
       return res.status(404).json({ 
-        error: `Consultant not found with email: ${normalizedEmail} in company ${req.companyId}`  // ✅ CHANGED
+        error: `Consultant not found with email: ${normalizedEmail} in company ${req.companyId}`
       });
     }
     
@@ -1002,7 +995,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
        AND status = 'active'
        ORDER BY created_at DESC 
        LIMIT 1`,
-      [consultant.id, req.companyId]  // ✅ CHANGED
+      [consultant.id, req.companyId]
     );
     
     if (contractResult.rows.length === 0) {
@@ -1012,7 +1005,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     const contract = contractResult.rows[0];
     
     // Use approved days
-    const daysWorked = timesheet.pdf_days || timesheet.email_days;
+    const daysWorked = parseFloat(timesheet.pdf_days || timesheet.email_days);
     
     // Parse month/year
     const monthName = timesheet.month;
@@ -1024,55 +1017,103 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     // Generate invoice number
     const invoiceCount = await pool.query(
       'SELECT COUNT(*) FROM invoices WHERE company_id = $1',
-      [req.companyId]  // ✅ CHANGED
+      [req.companyId]
     );
     const invoiceNumber = `INV-${year}-${String(parseInt(invoiceCount.rows[0].count) + 1).padStart(4, '0')}`;
     
-    // Calculate CONSULTANT invoice
+    // ✅ CALCULATE CONSULTANT INVOICE - SAFE VAT HANDLING
     const consultantDailyRate = parseFloat(contract.purchase_price);
-    const consultantSubtotal = consultantDailyRate * parseFloat(daysWorked);
-    const consultantVatRate = contract.consultant_vat_enabled ? parseFloat(contract.consultant_vat_rate) : 0;
-    const consultantVatAmount = consultantSubtotal * (consultantVatRate / 100);
-    const consultantTotal = consultantSubtotal + consultantVatAmount;
+    const consultantSubtotal = Math.round(consultantDailyRate * daysWorked * 100) / 100;
+    
+    // ✅ Safely get VAT rate, default to 0 if null/undefined
+    const consultantVatRate = contract.consultant_vat_enabled && contract.consultant_vat_rate 
+      ? parseFloat(contract.consultant_vat_rate) 
+      : 0;
+    
+    const consultantVatAmount = Math.round(consultantSubtotal * (consultantVatRate / 100) * 100) / 100;
+    const consultantTotal = Math.round((consultantSubtotal + consultantVatAmount) * 100) / 100;
+    
+    console.log('Consultant invoice:', {
+      dailyRate: consultantDailyRate,
+      daysWorked,
+      subtotal: consultantSubtotal,
+      vatEnabled: contract.consultant_vat_enabled,
+      vatRate: consultantVatRate,
+      vatAmount: consultantVatAmount,
+      total: consultantTotal
+    });
     
     const consultantInvoiceResult = await pool.query(
       `INSERT INTO invoices (
         company_id, contract_id, invoice_number, invoice_date, 
         period_from, period_to, days_worked, daily_rate, 
-        subtotal, vat_rate, vat_enabled, total_amount, 
+        subtotal, vat_rate, vat_enabled, vat_amount, total_amount, 
         invoice_type, status
-      ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       RETURNING *`,
       [
-        req.companyId,  // ✅ CHANGED
-        contract.id, `${invoiceNumber}-C`,
-        periodFrom, periodTo, daysWorked, consultantDailyRate,
-        consultantSubtotal, consultantVatRate, contract.consultant_vat_enabled,
-        consultantTotal, 'consultant', 'draft'
+        req.companyId,
+        contract.id,
+        `${invoiceNumber}-C`,
+        periodFrom,
+        periodTo,
+        daysWorked,
+        consultantDailyRate,
+        consultantSubtotal,
+        consultantVatRate,  // ✅ Always a number (0 if disabled)
+        contract.consultant_vat_enabled || false,
+        consultantVatAmount,  // ✅ Always a number (0 if disabled)
+        consultantTotal,
+        'consultant',
+        'draft'
       ]
     );
     
-    // Calculate CLIENT invoice
+    // ✅ CALCULATE CLIENT INVOICE - SAFE VAT HANDLING
     const clientDailyRate = parseFloat(contract.sell_price);
-    const clientSubtotal = clientDailyRate * parseFloat(daysWorked);
-    const clientVatRate = contract.vat_enabled ? parseFloat(contract.vat_rate) : 0;
-    const clientVatAmount = clientSubtotal * (clientVatRate / 100);
-    const clientTotal = clientSubtotal + clientVatAmount;
+    const clientSubtotal = Math.round(clientDailyRate * daysWorked * 100) / 100;
+    
+    // ✅ Safely get VAT rate, default to 0 if null/undefined
+    const clientVatRate = contract.vat_enabled && contract.vat_rate 
+      ? parseFloat(contract.vat_rate) 
+      : 0;
+    
+    const clientVatAmount = Math.round(clientSubtotal * (clientVatRate / 100) * 100) / 100;
+    const clientTotal = Math.round((clientSubtotal + clientVatAmount) * 100) / 100;
+    
+    console.log('Client invoice:', {
+      dailyRate: clientDailyRate,
+      daysWorked,
+      subtotal: clientSubtotal,
+      vatEnabled: contract.vat_enabled,
+      vatRate: clientVatRate,
+      vatAmount: clientVatAmount,
+      total: clientTotal
+    });
     
     const clientInvoiceResult = await pool.query(
       `INSERT INTO invoices (
         company_id, contract_id, invoice_number, invoice_date, 
         period_from, period_to, days_worked, daily_rate, 
-        subtotal, vat_rate, vat_enabled, total_amount, 
+        subtotal, vat_rate, vat_enabled, vat_amount, total_amount, 
         invoice_type, status
-      ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       RETURNING *`,
       [
-        req.companyId,  // ✅ CHANGED
-        contract.id, `${invoiceNumber}-CL`,
-        periodFrom, periodTo, daysWorked, clientDailyRate,
-        clientSubtotal, clientVatRate, contract.vat_enabled,
-        clientTotal, 'client', 'draft'
+        req.companyId,
+        contract.id,
+        `${invoiceNumber}-CL`,
+        periodFrom,
+        periodTo,
+        daysWorked,
+        clientDailyRate,
+        clientSubtotal,
+        clientVatRate,  // ✅ Always a number (0 if disabled)
+        contract.vat_enabled || false,
+        clientVatAmount,  // ✅ Always a number (0 if disabled)
+        clientTotal,
+        'client',
+        'draft'
       ]
     );
     
@@ -1095,7 +1136,6 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     res.status(500).json({ error: error.message });
   }
 });
-
 
 // Get all invoices
 app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res) => {
