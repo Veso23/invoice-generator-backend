@@ -864,6 +864,11 @@ app.put('/api/timesheets/:id/month', authenticateToken, checkCompanyAccess, asyn
     const { id } = req.params;
     const { month } = req.body;
     
+    // ✅ ADD LOGGING
+    console.log('Update month - Timesheet ID:', id);
+    console.log('Update month - User Company ID:', req.companyId);
+    console.log('Update month - Month:', month);
+    
     // Validate month
     const validMonths = ['January', 'February', 'March', 'April', 'May', 'June', 
                         'July', 'August', 'September', 'October', 'November', 'December'];
@@ -871,6 +876,13 @@ app.put('/api/timesheets/:id/month', authenticateToken, checkCompanyAccess, asyn
     if (!validMonths.includes(month)) {
       return res.status(400).json({ error: 'Invalid month' });
     }
+    
+    // Check what the actual timesheet has
+    const checkResult = await pool.query(
+      'SELECT company_id FROM automation_logs WHERE id = $1',
+      [id]
+    );
+    console.log('Timesheet company_id in DB:', checkResult.rows[0]?.company_id);
     
     const result = await pool.query(
       `UPDATE automation_logs 
@@ -890,7 +902,6 @@ app.put('/api/timesheets/:id/month', authenticateToken, checkCompanyAccess, asyn
     res.status(500).json({ error: error.message });
   }
 });
-
 // Invoice Generation
 app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
