@@ -946,10 +946,10 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
   try {
     const { id } = req.params;
     
-    // Get timesheet with approved days
+    // Get timesheet
     const timesheetResult = await pool.query(
-      'SELECT * FROM timesheets WHERE id = $1 AND company_id = $2',
-      [id, req.user.companyId]
+      'SELECT * FROM automation_logs WHERE id = $1',
+      [id]
     );
     
     if (timesheetResult.rows.length === 0) {
@@ -968,19 +968,21 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       return res.status(400).json({ error: 'Please match timesheet to consultant first' });
     }
     
-    // Find consultant by email
+    // ✅ SECURITY: Find consultant by email AND verify it belongs to current company
     const consultantResult = await pool.query(
       'SELECT * FROM consultants WHERE email = $1 AND company_id = $2',
       [timesheet.sender_email, req.user.companyId]
     );
     
     if (consultantResult.rows.length === 0) {
-      return res.status(400).json({ error: 'Consultant not found for this email' });
+      return res.status(403).json({ 
+        error: 'Access denied: Consultant does not belong to your company' 
+      });
     }
     
     const consultant = consultantResult.rows[0];
     
-    // Find active contract for this consultant
+    // Find active contract for this consultant (in current company)
     const contractResult = await pool.query(
       `SELECT * FROM contracts 
        WHERE consultant_id = $1 
@@ -1002,12 +1004,12 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     
     // Parse month/year from timesheet
     const monthName = timesheet.month;
-    const year = new Date().getFullYear(); // Use current year or extract from timesheet
+    const year = new Date().getFullYear();
     const monthIndex = new Date(`${monthName} 1, ${year}`).getMonth();
     
     // Calculate period dates (first and last day of the month)
     const periodFrom = new Date(year, monthIndex, 1);
-    const periodTo = new Date(year, monthIndex + 1, 0); // Last day of month
+    const periodTo = new Date(year, monthIndex + 1, 0);
     
     // Generate invoice number
     const invoiceCount = await pool.query(
@@ -1035,7 +1037,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       [
         req.user.companyId,
         contract.id,
-        `${invoiceNumber}-C`, // C for Consultant
+        `${invoiceNumber}-C`,
         periodFrom,
         periodTo,
         daysWorked,
@@ -1068,7 +1070,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       [
         req.user.companyId,
         contract.id,
-        `${invoiceNumber}-CL`, // CL for Client
+        `${invoiceNumber}-CL`,
         periodFrom,
         periodTo,
         daysWorked,
@@ -1084,7 +1086,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     
     // ✅ Mark timesheet as invoiced
     await pool.query(
-      'UPDATE timesheets SET invoice_generated = true WHERE id = $1',
+      'UPDATE automation_logs SET invoice_generated = true WHERE id = $1',
       [id]
     );
     
