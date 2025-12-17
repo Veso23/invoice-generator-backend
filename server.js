@@ -956,7 +956,18 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     if (!timesheet.sender_email) {
       return res.status(400).json({ error: 'Please match timesheet to consultant first' });
     }
-
+    
+    await pool.query(
+      'UPDATE timesheets SET invoice_generated = true WHERE id = $1',
+      [id]
+    );
+    
+    res.json({ message: 'Invoice generated successfully', invoice: result.rows[0] });
+  } catch (error) {
+    console.error('Error generating invoice:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
     
 
     // Get consultant
