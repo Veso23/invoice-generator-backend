@@ -941,169 +941,161 @@ const clientInvoiceResult = await pool.query(`
   }
 });
 // Generate invoice from timesheet using approved days
+// Generate invoice from timesheet using approved days
 app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
-
+    
     // Get timesheet with approved days
-    const timesheetResult = await pool.query('SELECT * FROM automation_logs WHERE id = $1', [id]);
+    const timesheetResult = await pool.query(
+      'SELECT * FROM timesheets WHERE id = $1 AND company_id = $2',
+      [id, req.user.companyId]
+    );
+    
     if (timesheetResult.rows.length === 0) {
       return res.status(404).json({ error: 'Timesheet not found' });
     }
+    
     const timesheet = timesheetResult.rows[0];
-
+    
+    // Must have approved days
+    if (!timesheet.pdf_days && !timesheet.email_days) {
+      return res.status(400).json({ error: 'No days found in timesheet' });
+    }
+    
     // Must be matched to consultant
     if (!timesheet.sender_email) {
       return res.status(400).json({ error: 'Please match timesheet to consultant first' });
     }
     
+    // Find consultant by email
+    const consultantResult = await pool.query(
+      'SELECT * FROM consultants WHERE email = $1 AND company_id = $2',
+      [timesheet.sender_email, req.user.companyId]
+    );
+    
+    if (consultantResult.rows.length === 0) {
+      return res.status(400).json({ error: 'Consultant not found for this email' });
+    }
+    
+    const consultant = consultantResult.rows[0];
+    
+    // Find active contract for this consultant
+    const contractResult = await pool.query(
+      `SELECT * FROM contracts 
+       WHERE consultant_id = $1 
+       AND company_id = $2 
+       AND status = 'active'
+       ORDER BY created_at DESC 
+       LIMIT 1`,
+      [consultant.id, req.user.companyId]
+    );
+    
+    if (contractResult.rows.length === 0) {
+      return res.status(400).json({ error: 'No active contract found for this consultant' });
+    }
+    
+    const contract = contractResult.rows[0];
+    
+    // Use approved days (pdf_days takes priority)
+    const daysWorked = timesheet.pdf_days || timesheet.email_days;
+    
+    // Parse month/year from timesheet
+    const monthName = timesheet.month;
+    const year = new Date().getFullYear(); // Use current year or extract from timesheet
+    const monthIndex = new Date(`${monthName} 1, ${year}`).getMonth();
+    
+    // Calculate period dates (first and last day of the month)
+    const periodFrom = new Date(year, monthIndex, 1);
+    const periodTo = new Date(year, monthIndex + 1, 0); // Last day of month
+    
+    // Generate invoice number
+    const invoiceCount = await pool.query(
+      'SELECT COUNT(*) FROM invoices WHERE company_id = $1',
+      [req.user.companyId]
+    );
+    const invoiceNumber = `INV-${year}-${String(parseInt(invoiceCount.rows[0].count) + 1).padStart(4, '0')}`;
+    
+    // Calculate amounts for CONSULTANT invoice
+    const consultantDailyRate = parseFloat(contract.purchase_price);
+    const consultantSubtotal = consultantDailyRate * parseFloat(daysWorked);
+    const consultantVatRate = contract.consultant_vat_enabled ? parseFloat(contract.consultant_vat_rate) : 0;
+    const consultantVatAmount = consultantSubtotal * (consultantVatRate / 100);
+    const consultantTotal = consultantSubtotal + consultantVatAmount;
+    
+    // Create CONSULTANT invoice
+    const consultantInvoiceResult = await pool.query(
+      `INSERT INTO invoices (
+        company_id, contract_id, invoice_number, invoice_date, 
+        period_from, period_to, days_worked, daily_rate, 
+        subtotal, vat_rate, vat_enabled, total_amount, 
+        invoice_type, status
+      ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      RETURNING *`,
+      [
+        req.user.companyId,
+        contract.id,
+        `${invoiceNumber}-C`, // C for Consultant
+        periodFrom,
+        periodTo,
+        daysWorked,
+        consultantDailyRate,
+        consultantSubtotal,
+        consultantVatRate,
+        contract.consultant_vat_enabled,
+        consultantTotal,
+        'consultant',
+        'draft'
+      ]
+    );
+    
+    // Calculate amounts for CLIENT invoice
+    const clientDailyRate = parseFloat(contract.sell_price);
+    const clientSubtotal = clientDailyRate * parseFloat(daysWorked);
+    const clientVatRate = contract.vat_enabled ? parseFloat(contract.vat_rate) : 0;
+    const clientVatAmount = clientSubtotal * (clientVatRate / 100);
+    const clientTotal = clientSubtotal + clientVatAmount;
+    
+    // Create CLIENT invoice
+    const clientInvoiceResult = await pool.query(
+      `INSERT INTO invoices (
+        company_id, contract_id, invoice_number, invoice_date, 
+        period_from, period_to, days_worked, daily_rate, 
+        subtotal, vat_rate, vat_enabled, total_amount, 
+        invoice_type, status
+      ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      RETURNING *`,
+      [
+        req.user.companyId,
+        contract.id,
+        `${invoiceNumber}-CL`, // CL for Client
+        periodFrom,
+        periodTo,
+        daysWorked,
+        clientDailyRate,
+        clientSubtotal,
+        clientVatRate,
+        contract.vat_enabled,
+        clientTotal,
+        'client',
+        'draft'
+      ]
+    );
+    
+    // ✅ Mark timesheet as invoiced
     await pool.query(
       'UPDATE timesheets SET invoice_generated = true WHERE id = $1',
       [id]
     );
     
-    res.json({ message: 'Invoice generated successfully', invoice: result.rows[0] });
+    res.json({ 
+      message: 'Invoices generated successfully',
+      consultantInvoice: consultantInvoiceResult.rows[0],
+      clientInvoice: clientInvoiceResult.rows[0]
+    });
+    
   } catch (error) {
     console.error('Error generating invoice:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-    
-
-    // Get consultant
-    const consultantResult = await pool.query(
-      'SELECT * FROM consultants WHERE email = $1 AND company_id = $2',
-      [timesheet.sender_email, req.companyId]
-    );
-    if (consultantResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Consultant not found' });
-    }
-    const consultant = consultantResult.rows[0];
-
-    // Get active contract
-    const contractResult = await pool.query(
-      `SELECT c.*, cli.first_name as client_first_name, cli.last_name as client_last_name,
-              cli.company_name as client_company_name
-       FROM contracts c JOIN clients cli ON c.client_id = cli.id
-       WHERE c.consultant_id = $1 AND c.company_id = $2 AND c.status = 'active'
-       ORDER BY c.created_at DESC LIMIT 1`,
-      [consultant.id, req.companyId]
-    );
-    if (contractResult.rows.length === 0) {
-      return res.status(404).json({ error: 'No active contract found' });
-    }
-    const contract = contractResult.rows[0];
-
-    // Use ACTUAL days from timesheet (not contract dates!)
-    const daysWorked = parseFloat(timesheet.pdf_days || timesheet.email_days || 0);
-    if (daysWorked <= 0) {
-      return res.status(400).json({ error: 'Invalid days worked in timesheet' });
-    }
-
-    // Parse month from timesheet (handle both formats)
-    const monthStr = timesheet.month || '';
-    let year, month;
-
-    if (monthStr.includes('-')) {
-      [year, month] = monthStr.split('-');
-    } else {
-      const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
-                          'July', 'August', 'September', 'October', 'November', 'December'];
-      const monthIndex = monthNames.findIndex(m => m.toLowerCase() === monthStr.toLowerCase());
-      
-      if (monthIndex === -1) {
-        return res.status(400).json({ error: 'Invalid month format in timesheet' });
-      }
-      
-      year = new Date().getFullYear().toString();
-      month = (monthIndex + 1).toString();
-    }
-
-    const periodFrom = new Date(parseInt(year), parseInt(month) - 1, 1);
-    const periodTo = new Date(parseInt(year), parseInt(month), 0);
-
-const companyPrefix = `C${req.companyId}`;
-
-// ✅ GENERATE CONSULTANT INVOICE NUMBER (per consultant, per company)
-// Format: INV-C8-VyaraManolova-001, INV-C8-VyaraManolova-002, etc.
-const consultantName = `${consultant.first_name}${consultant.last_name}`.replace(/\s+/g, '');
-
-const consultantInvoiceCountResult = await pool.query(`
-  SELECT COUNT(*) as count 
-  FROM invoices i
-  JOIN contracts c ON i.contract_id = c.id
-  WHERE c.consultant_id = $1 AND i.invoice_type = 'consultant'
-`, [consultant.id]);
-
-const consultantInvoiceCount = parseInt(consultantInvoiceCountResult.rows[0].count) + 1;
-const consultantInvoiceNumber = `INV-${companyPrefix}-${consultantName}-${consultantInvoiceCount.toString().padStart(3, '0')}`;
-
-// ✅ GENERATE CLIENT INVOICE NUMBER (company-wide per year)
-const currentYear = new Date().getFullYear();
-const clientInvoiceCountResult = await pool.query(`
-  SELECT COUNT(*) as count 
-  FROM invoices
-  WHERE invoice_type = 'client' 
-    AND company_id = $1
-    AND EXTRACT(YEAR FROM invoice_date) = $2
-`, [req.companyId, currentYear]);
-
-const clientInvoiceCount = parseInt(clientInvoiceCountResult.rows[0].count) + 1;
-const clientInvoiceNumber = `INV-${currentYear}-${companyPrefix}-${clientInvoiceCount.toString().padStart(3, '0')}`;
-
-// REPLACE IT WITH THIS:
-// ✅ CONSULTANT INVOICE: Use contract's consultant VAT settings
-const consultantVatEnabled = contract.consultant_vat_enabled === true;
-const consultantVatRate = contract.consultant_vat_rate || 0;
-const consultantVatDecimal = consultantVatRate / 100;
-
-const consultantSubtotal = Math.round(contract.purchase_price * daysWorked * 100) / 100;
-const consultantVAT = consultantVatEnabled ? Math.round(consultantSubtotal * consultantVatDecimal * 100) / 100 : 0;
-const consultantTotal = Math.round((consultantSubtotal + consultantVAT) * 100) / 100;
-
-// ✅ CLIENT INVOICE: Use contract's client VAT settings
-const clientVatEnabled = contract.vat_enabled === true;
-const clientVatRate = contract.vat_rate || 0;
-const clientVatDecimal = clientVatRate / 100;
-
-const clientSubtotal = Math.round(contract.sell_price * daysWorked * 100) / 100;
-const clientVAT = clientVatEnabled ? Math.round(clientSubtotal * clientVatDecimal * 100) / 100 : 0;
-const clientTotal = Math.round((clientSubtotal + clientVAT) * 100) / 100;
-
-// Create BOTH invoices
-// Create BOTH invoices
-await pool.query(`
-  INSERT INTO invoices 
-  (invoice_number, contract_id, invoice_type, invoice_date, period_from, period_to,
-   days_worked, daily_rate, subtotal, vat_rate, vat_amount, total_amount, vat_enabled, company_id, created_by, created_at)
-  VALUES 
-  ($1, $2, 'consultant', CURRENT_DATE, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW()),
-  ($14, $2, 'client', CURRENT_DATE, $3, $4, $5, $15, $16, $17, $18, $19, $20, $12, $13, NOW())
-`, [
-  consultantInvoiceNumber, contract.id, periodFrom, periodTo, daysWorked,
-  contract.purchase_price, consultantSubtotal, consultantVatRate, consultantVAT, consultantTotal, 
-  consultantVatEnabled,  // position 11 - false for consultant
-  req.companyId, req.user.id,
-  clientInvoiceNumber, contract.sell_price, clientSubtotal, 
-  clientVatRate, clientVAT, clientTotal,  // positions 17-19
-  clientVatEnabled  // position 20 - uses contract setting for client
-]);
-
-    // Mark timesheet as processed
-    await pool.query(
-      'UPDATE automation_logs SET invoice_generated = true, processed = true WHERE id = $1',
-      [id]
-    );
-
-    res.json({ 
-      message: 'Invoices generated successfully from timesheet', 
-      consultantInvoice: consultantInvoiceNumber,
-      clientInvoice: clientInvoiceNumber,
-      daysUsed: daysWorked
-    });
-
-  } catch (error) {
-    console.error('Generate invoice from timesheet error:', error);
     res.status(500).json({ error: error.message });
   }
 });
