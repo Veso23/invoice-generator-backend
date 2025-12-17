@@ -1507,6 +1507,16 @@ app.put('/api/invoices/:id/vat', authenticateToken, checkCompanyAccess, async (r
   }
 });
 
+// Temporary debug endpoint
+app.get('/api/debug/me', authenticateToken, checkCompanyAccess, async (req, res) => {
+  res.json({
+    userId: req.user.id,
+    userEmail: req.user.email,
+    userCompanyId: req.user.company_id,
+    companyIdFromMiddleware: req.companyId
+  });
+});
+
 // Toggle VAT enabled/disabled
 app.put('/api/invoices/:id/vat-toggle', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
