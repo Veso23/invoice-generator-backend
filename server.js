@@ -940,6 +940,7 @@ const clientInvoiceResult = await pool.query(`
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
 // Generate invoice from timesheet using approved days
 // Generate invoice from timesheet using approved days
 app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompanyAccess, async (req, res) => {
@@ -958,6 +959,22 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     
     const timesheet = timesheetResult.rows[0];
     
+    // 🔍 DEBUG: Log what we're working with
+    console.log('=== GENERATE INVOICE DEBUG ===');
+    console.log('Timesheet ID:', id);
+    console.log('Timesheet company_id:', timesheet.company_id);
+    console.log('User company_id:', req.user.companyId);
+    console.log('Sender email:', timesheet.sender_email);
+    console.log('Recipient email:', timesheet.recipient_email);
+    
+    // ✅ VERIFY: Timesheet belongs to user's company
+    if (timesheet.company_id && timesheet.company_id !== req.user.companyId) {
+      console.log('❌ Company mismatch!');
+      return res.status(403).json({ 
+        error: 'Access denied: This timesheet belongs to a different company' 
+      });
+    }
+    
     // Must have approved days
     if (!timesheet.pdf_days && !timesheet.email_days) {
       return res.status(400).json({ error: 'No days found in timesheet' });
@@ -968,21 +985,35 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       return res.status(400).json({ error: 'Please match timesheet to consultant first' });
     }
     
-    // ✅ SECURITY: Find consultant by email AND verify it belongs to current company
+    // ✅ Find consultant by email in user's company
     const consultantResult = await pool.query(
       'SELECT * FROM consultants WHERE email = $1 AND company_id = $2',
       [timesheet.sender_email, req.user.companyId]
     );
     
+    console.log('Consultants found:', consultantResult.rows.length);
+    if (consultantResult.rows.length > 0) {
+      console.log('Consultant:', consultantResult.rows[0]);
+    }
+    
     if (consultantResult.rows.length === 0) {
+      console.log('❌ No consultant found with email:', timesheet.sender_email, 'in company:', req.user.companyId);
+      
+      // 🔍 EXTRA DEBUG: Check if consultant exists in ANY company
+      const anyConsultant = await pool.query(
+        'SELECT id, email, company_id FROM consultants WHERE email = $1',
+        [timesheet.sender_email]
+      );
+      console.log('Consultant exists in other companies?', anyConsultant.rows);
+      
       return res.status(403).json({ 
-        error: 'Access denied: Consultant does not belong to your company' 
+        error: 'Consultant with this email not found in your company. Please add the consultant first or check the email address.' 
       });
     }
     
     const consultant = consultantResult.rows[0];
     
-    // Find active contract for this consultant (in current company)
+    // Find active contract for this consultant
     const contractResult = await pool.query(
       `SELECT * FROM contracts 
        WHERE consultant_id = $1 
@@ -992,6 +1023,8 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
        LIMIT 1`,
       [consultant.id, req.user.companyId]
     );
+    
+    console.log('Active contracts found:', contractResult.rows.length);
     
     if (contractResult.rows.length === 0) {
       return res.status(400).json({ error: 'No active contract found for this consultant' });
@@ -1090,6 +1123,8 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       [id]
     );
     
+    console.log('✅ Invoices created successfully');
+    
     res.json({ 
       message: 'Invoices generated successfully',
       consultantInvoice: consultantInvoiceResult.rows[0],
@@ -1101,8 +1136,6 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     res.status(500).json({ error: error.message });
   }
 });
-
-
 // Get all invoices
 app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
