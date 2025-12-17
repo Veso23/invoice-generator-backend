@@ -1135,14 +1135,29 @@ ORDER BY i.created_at DESC
 app.post('/api/n8n/automation-data', async (req, res) => {
   try {
     const {
-      timestamp, senderEmail, personName, month,
+      timestamp, senderEmail, recipientEmail, personName, month,
       emailHours, emailDays, pdfHours, pdfDays,
-      hoursDiff, daysDiff, hoursStatus, daysStatus, status
+      hoursDiff, daysDiff, hoursStatus, daysStatus, status,
+      timesheetFileUrl
     } = req.body;
 
-    // 🔍 Find company_id by matching consultant email
+    // ✅ Find company by recipient email
     let companyId = null;
-    if (senderEmail) {
+    if (recipientEmail) {
+      const companyResult = await pool.query(
+        'SELECT id FROM companies WHERE timesheet_email = $1',
+        [recipientEmail.toLowerCase()]
+      );
+      
+      if (companyResult.rows.length > 0) {
+        companyId = companyResult.rows[0].id;
+      } else {
+        console.warn(`No company found for timesheet email: ${recipientEmail}`);
+      }
+    }
+    
+    // Fallback: match by sender email if recipient didn't match
+    if (!companyId && senderEmail) {
       const consultantResult = await pool.query(
         'SELECT company_id FROM consultants WHERE email = $1 LIMIT 1',
         [senderEmail]
@@ -1154,12 +1169,14 @@ app.post('/api/n8n/automation-data', async (req, res) => {
 
     const result = await pool.query(`
       INSERT INTO automation_logs 
-      (timestamp, sender_email, person_name, month, email_hours, email_days,
-       pdf_hours, pdf_days, hours_diff, days_diff, hours_status, days_status, status, company_id, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW())
+      (timestamp, sender_email, recipient_email, person_name, month, email_hours, email_days,
+       pdf_hours, pdf_days, hours_diff, days_diff, hours_status, days_status, 
+       status, company_id, timesheet_file_url, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
       RETURNING *
-    `, [timestamp, senderEmail, personName, month, emailHours, emailDays,
-        pdfHours, pdfDays, hoursDiff, daysDiff, hoursStatus, daysStatus, status, companyId]);
+    `, [timestamp, senderEmail, recipientEmail, personName, month, emailHours, emailDays,
+        pdfHours, pdfDays, hoursDiff, daysDiff, hoursStatus, daysStatus, 
+        status, companyId, timesheetFileUrl || null]);
 
     res.status(201).json(result.rows[0]);
   } catch (error) {
@@ -1167,7 +1184,6 @@ app.post('/api/n8n/automation-data', async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
-
 // Get automation logs
 app.get('/api/automation-logs', authenticateToken, async (req, res) => {
   try {
