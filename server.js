@@ -1272,7 +1272,7 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
   try {
     const { 
       name, address, representative_name, timesheet_deadline_day, 
-      company_vat, company_email, default_vat_rate, 
+      company_vat, company_email, timesheet_email, default_vat_rate,  // ← ADD timesheet_email
       bank_name, bank_iban, bank_swift, bank_address,
       smtp_host, smtp_port, smtp_username, smtp_password,
       smtp_from_email, smtp_from_name, smtp_secure
@@ -1280,29 +1280,15 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
     
     const result = await pool.query(
       `UPDATE companies 
-       SET name = $1, 
-           address = $2,
-           representative_name = $3,
-           timesheet_deadline_day = $4, 
-           company_vat = $5, 
-           company_email = $6,
-           default_vat_rate = $7,
-           bank_name = $8,
-           bank_iban = $9,
-           bank_swift = $10,
-           bank_address = $11,
-           smtp_host = $12,
-           smtp_port = $13,
-           smtp_username = $14,
-           smtp_password = $15,
-           smtp_from_email = $16,
-           smtp_from_name = $17,
-           smtp_secure = $18,
-           updated_at = NOW()
-       WHERE id = $19
+       SET name = $1, address = $2, representative_name = $3, timesheet_deadline_day = $4, 
+           company_vat = $5, company_email = $6, timesheet_email = $7, default_vat_rate = $8,  
+           bank_name = $9, bank_iban = $10, bank_swift = $11, bank_address = $12,
+           smtp_host = $13, smtp_port = $14, smtp_username = $15, smtp_password = $16,
+           smtp_from_email = $17, smtp_from_name = $18, smtp_secure = $19, updated_at = NOW()
+       WHERE id = $20
        RETURNING *`,
       [name, address, representative_name, timesheet_deadline_day, 
-       company_vat, company_email, default_vat_rate, 
+       company_vat, company_email, timesheet_email, default_vat_rate,
        bank_name, bank_iban, bank_swift, bank_address,
        smtp_host, smtp_port, smtp_username, smtp_password,
        smtp_from_email, smtp_from_name, smtp_secure,
