@@ -986,6 +986,7 @@ const clientInvoiceResult = await pool.query(`
 });
 
 // Generate invoice from timesheet using approved days
+// Generate invoice from timesheet using approved days
 app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1002,9 +1003,14 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     
     const timesheet = timesheetResult.rows[0];
     
-    // Must have approved days
-    if (!timesheet.pdf_days && !timesheet.email_days) {
-      return res.status(400).json({ error: 'No days found in timesheet' });
+   // Calculate total days: days + (hours / 8)
+  const daysWorked = calculatedDaysWorked;
+    const hours = parseFloat(timesheet.pdf_hours) || parseFloat(timesheet.email_hours) || 0;
+    const calculatedDaysWorked = parseFloat((days + (hours / 8)).toFixed(2));
+    
+    // Must have some work recorded (days or hours)
+    if (calculatedDaysWorked === 0) {
+      return res.status(400).json({ error: 'No days or hours found in timesheet' });
     }
     
     // Must be matched to consultant
@@ -1048,8 +1054,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     
     const contract = contractResult.rows[0];
     
-    // Use approved days
-    const daysWorked = parseFloat(timesheet.pdf_days || timesheet.email_days);
+    // ✅ daysWorked is already calculated above with hours included
     
     // Parse month/year
     const monthName = timesheet.month;
@@ -1167,7 +1172,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       [id]
     );
     
-    console.log('✅ SUCCESS: Invoices created');
+    console.log('✅ SUCCESS: Invoices created with daysWorked:', daysWorked);
     
     res.json({ 
       message: 'Invoices generated successfully',
@@ -1180,7 +1185,6 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     res.status(500).json({ error: error.message });
   }
 });
-
 // Get all invoices
 app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
