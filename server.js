@@ -1003,13 +1003,13 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     
     const timesheet = timesheetResult.rows[0];
     
-   // Calculate total days: days + (hours / 8)
-  const daysWorked = calculatedDaysWorked;
+// Calculate total days: days + (hours / 8)
+    const days = parseFloat(timesheet.pdf_days) || parseFloat(timesheet.email_days) || 0;
     const hours = parseFloat(timesheet.pdf_hours) || parseFloat(timesheet.email_hours) || 0;
-    const calculatedDaysWorked = parseFloat((days + (hours / 8)).toFixed(2));
+    const daysWorked = parseFloat((days + (hours / 8)).toFixed(2));
     
     // Must have some work recorded (days or hours)
-    if (calculatedDaysWorked === 0) {
+    if (daysWorked === 0) {
       return res.status(400).json({ error: 'No days or hours found in timesheet' });
     }
     
