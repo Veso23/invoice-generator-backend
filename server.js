@@ -1002,13 +1002,17 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     
     const timesheet = timesheetResult.rows[0];
     
-    // Calculate total days: days + (hours / 8)
+    // ✅ FIXED: Calculate days - use days if available, otherwise convert hours to days
+    // Days and hours represent the SAME work, not additional work
     const days = parseFloat(timesheet.pdf_days) || parseFloat(timesheet.email_days) || 0;
     const hours = parseFloat(timesheet.pdf_hours) || parseFloat(timesheet.email_hours) || 0;
-    const daysWorked = parseFloat((days + (hours / 8)).toFixed(2));
     
-    // Must have some work recorded (days or hours)
-    if (daysWorked === 0) {
+    let daysWorked;
+    if (days > 0) {
+      daysWorked = parseFloat(days.toFixed(2));
+    } else if (hours > 0) {
+      daysWorked = parseFloat((hours / 8).toFixed(2));
+    } else {
       return res.status(400).json({ error: 'No days or hours found in timesheet' });
     }
     
@@ -1171,7 +1175,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       [id]
     );
     
-    console.log('✅ SUCCESS: Invoices created with timesheet_id:', id);
+    console.log('✅ SUCCESS: Invoices created with timesheet_id:', id, 'daysWorked:', daysWorked);
     
     res.json({ 
       message: 'Invoices generated successfully',
@@ -1226,6 +1230,7 @@ app.get('/api/timesheets/history', authenticateToken, checkCompanyAccess, async 
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
 
 // Get all invoices
 app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res) => {
