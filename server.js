@@ -986,7 +986,6 @@ const clientInvoiceResult = await pool.query(`
 });
 
 // Generate invoice from timesheet using approved days
-// Generate invoice from timesheet using approved days
 app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1003,7 +1002,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     
     const timesheet = timesheetResult.rows[0];
     
-// Calculate total days: days + (hours / 8)
+    // Calculate total days: days + (hours / 8)
     const days = parseFloat(timesheet.pdf_days) || parseFloat(timesheet.email_days) || 0;
     const hours = parseFloat(timesheet.pdf_hours) || parseFloat(timesheet.email_hours) || 0;
     const daysWorked = parseFloat((days + (hours / 8)).toFixed(2));
@@ -1054,8 +1053,6 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     
     const contract = contractResult.rows[0];
     
-    // ✅ daysWorked is already calculated above with hours included
-    
     // Parse month/year
     const monthName = timesheet.month;
     const year = new Date().getFullYear();
@@ -1070,11 +1067,10 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     );
     const invoiceNumber = `INV-${year}-${String(parseInt(invoiceCount.rows[0].count) + 1).padStart(4, '0')}`;
     
-    // ✅ CALCULATE CONSULTANT INVOICE - SAFE VAT HANDLING
+    // CALCULATE CONSULTANT INVOICE
     const consultantDailyRate = parseFloat(contract.purchase_price);
     const consultantSubtotal = Math.round(consultantDailyRate * daysWorked * 100) / 100;
     
-    // ✅ Safely get VAT rate, default to 0 if null/undefined
     const consultantVatRate = contract.consultant_vat_enabled && contract.consultant_vat_rate 
       ? parseFloat(contract.consultant_vat_rate) 
       : 0;
@@ -1092,13 +1088,14 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       total: consultantTotal
     });
     
+    // ✅ UPDATED: Now includes timesheet_id
     const consultantInvoiceResult = await pool.query(
       `INSERT INTO invoices (
         company_id, contract_id, invoice_number, invoice_date, 
         period_from, period_to, days_worked, daily_rate, 
         subtotal, vat_rate, vat_enabled, vat_amount, total_amount, 
-        invoice_type, status
-      ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        invoice_type, status, timesheet_id
+      ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
       RETURNING *`,
       [
         req.companyId,
@@ -1109,20 +1106,20 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
         daysWorked,
         consultantDailyRate,
         consultantSubtotal,
-        consultantVatRate,  // ✅ Always a number (0 if disabled)
+        consultantVatRate,
         contract.consultant_vat_enabled || false,
-        consultantVatAmount,  // ✅ Always a number (0 if disabled)
+        consultantVatAmount,
         consultantTotal,
         'consultant',
-        'draft'
+        'draft',
+        id  // ✅ timesheet_id
       ]
     );
     
-    // ✅ CALCULATE CLIENT INVOICE - SAFE VAT HANDLING
+    // CALCULATE CLIENT INVOICE
     const clientDailyRate = parseFloat(contract.sell_price);
     const clientSubtotal = Math.round(clientDailyRate * daysWorked * 100) / 100;
     
-    // ✅ Safely get VAT rate, default to 0 if null/undefined
     const clientVatRate = contract.vat_enabled && contract.vat_rate 
       ? parseFloat(contract.vat_rate) 
       : 0;
@@ -1140,13 +1137,14 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       total: clientTotal
     });
     
+    // ✅ UPDATED: Now includes timesheet_id
     const clientInvoiceResult = await pool.query(
       `INSERT INTO invoices (
         company_id, contract_id, invoice_number, invoice_date, 
         period_from, period_to, days_worked, daily_rate, 
         subtotal, vat_rate, vat_enabled, vat_amount, total_amount, 
-        invoice_type, status
-      ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        invoice_type, status, timesheet_id
+      ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
       RETURNING *`,
       [
         req.companyId,
@@ -1157,12 +1155,13 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
         daysWorked,
         clientDailyRate,
         clientSubtotal,
-        clientVatRate,  // ✅ Always a number (0 if disabled)
+        clientVatRate,
         contract.vat_enabled || false,
-        clientVatAmount,  // ✅ Always a number (0 if disabled)
+        clientVatAmount,
         clientTotal,
         'client',
-        'draft'
+        'draft',
+        id  // ✅ timesheet_id
       ]
     );
     
@@ -1172,7 +1171,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       [id]
     );
     
-    console.log('✅ SUCCESS: Invoices created with daysWorked:', daysWorked);
+    console.log('✅ SUCCESS: Invoices created with timesheet_id:', id);
     
     res.json({ 
       message: 'Invoices generated successfully',
@@ -1185,6 +1184,49 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     res.status(500).json({ error: error.message });
   }
 });
+
+
+// ============================================
+// NEW ENDPOINT: Get timesheet history with linked invoices
+// ============================================
+// Add this new endpoint to your server.js
+
+app.get('/api/timesheets/history', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        al.*,
+        c.first_name as consultant_first_name,
+        c.last_name as consultant_last_name,
+        c.company_name as consultant_company_name,
+        c.id as consultant_id,
+        -- Get consultant invoice
+        ci.id as consultant_invoice_id,
+        ci.invoice_number as consultant_invoice_number,
+        ci.pdf_url as consultant_invoice_pdf_url,
+        ci.total_amount as consultant_invoice_total,
+        ci.status as consultant_invoice_status,
+        -- Get client invoice
+        cli.id as client_invoice_id,
+        cli.invoice_number as client_invoice_number,
+        cli.pdf_url as client_invoice_pdf_url,
+        cli.total_amount as client_invoice_total,
+        cli.status as client_invoice_status
+      FROM automation_logs al
+      LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email)) AND c.company_id = $1
+      LEFT JOIN invoices ci ON ci.timesheet_id = al.id AND ci.invoice_type = 'consultant'
+      LEFT JOIN invoices cli ON cli.timesheet_id = al.id AND cli.invoice_type = 'client'
+      WHERE al.company_id = $1
+      ORDER BY al.created_at DESC
+    `, [req.companyId]);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get timesheet history error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Get all invoices
 app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
