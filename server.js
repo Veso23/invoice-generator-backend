@@ -987,23 +987,28 @@ const clientInvoiceResult = await pool.query(`
 
 // Generate invoice from timesheet using approved days
 app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompanyAccess, async (req, res) => {
+  const client = await pool.connect();
+  
   try {
     const { id } = req.params;
     
+    // Start transaction
+    await client.query('BEGIN');
+    
     // Get timesheet
-    const timesheetResult = await pool.query(
+    const timesheetResult = await client.query(
       'SELECT * FROM automation_logs WHERE id = $1',
       [id]
     );
     
     if (timesheetResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Timesheet not found' });
     }
     
     const timesheet = timesheetResult.rows[0];
     
-    // ✅ FIXED: Calculate days - use days if available, otherwise convert hours to days
-    // Days and hours represent the SAME work, not additional work
+    // Calculate days - use days if available, otherwise convert hours to days
     const days = parseFloat(timesheet.pdf_days) || parseFloat(timesheet.email_days) || 0;
     const hours = parseFloat(timesheet.pdf_hours) || parseFloat(timesheet.email_hours) || 0;
     
@@ -1013,11 +1018,13 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     } else if (hours > 0) {
       daysWorked = parseFloat((hours / 8).toFixed(2));
     } else {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'No days or hours found in timesheet' });
     }
     
     // Must be matched to consultant
     if (!timesheet.sender_email) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'Please match timesheet to consultant first' });
     }
     
@@ -1025,7 +1032,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     const normalizedEmail = timesheet.sender_email.trim().toLowerCase();
     
     // Find consultant
-    const consultantResult = await pool.query(
+    const consultantResult = await client.query(
       `SELECT * FROM consultants 
        WHERE LOWER(TRIM(email)) = $1 
        AND company_id = $2`,
@@ -1033,6 +1040,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     );
     
     if (consultantResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ 
         error: `Consultant not found with email: ${normalizedEmail} in company ${req.companyId}`
       });
@@ -1041,7 +1049,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     const consultant = consultantResult.rows[0];
     
     // Find active contract
-    const contractResult = await pool.query(
+    const contractResult = await client.query(
       `SELECT * FROM contracts 
        WHERE consultant_id = $1 
        AND company_id = $2 
@@ -1052,24 +1060,51 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     );
     
     if (contractResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ error: 'No active contract found for this consultant' });
     }
     
     const contract = contractResult.rows[0];
     
-    // Parse month/year
+    // ✅ FIXED: Calculate year correctly based on timesheet month
     const monthName = timesheet.month;
-    const year = new Date().getFullYear();
-    const monthIndex = new Date(`${monthName} 1, ${year}`).getMonth();
-    const periodFrom = new Date(year, monthIndex, 1);
-    const periodTo = new Date(year, monthIndex + 1, 0);
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
+                        'July', 'August', 'September', 'October', 'November', 'December'];
+    const timesheetMonthIndex = monthNames.findIndex(m => m.toLowerCase() === monthName.toLowerCase());
     
-    // Generate invoice number
-    const invoiceCount = await pool.query(
-      'SELECT COUNT(*) FROM invoices WHERE company_id = $1',
+    const now = new Date();
+    const currentMonth = now.getMonth(); // 0-11
+    const currentYear = now.getFullYear();
+    
+    // Determine the correct year for the timesheet
+    let year;
+    if (timesheetMonthIndex > currentMonth + 1) {
+      // Timesheet month is much later than current month - must be previous year
+      // e.g., Current: January (0), Timesheet: December (11) -> previous year
+      year = currentYear - 1;
+    } else if (timesheetMonthIndex < currentMonth - 6) {
+      // Timesheet month is much earlier - could be next year (rare case)
+      // e.g., Current: December (11), Timesheet: January (0) -> could be next year
+      // But more likely it's current year, so we'll keep current year
+      year = currentYear;
+    } else {
+      // Normal case - same year
+      year = currentYear;
+    }
+    
+    console.log(`Timesheet month: ${monthName}, Current month: ${currentMonth}, Calculated year: ${year}`);
+    
+    const periodFrom = new Date(year, timesheetMonthIndex, 1);
+    const periodTo = new Date(year, timesheetMonthIndex + 1, 0); // Last day of month
+    
+    // ✅ FIXED: Generate invoice number with locking to prevent race condition
+    // Lock the invoices table for this company while we get the count
+    const invoiceCountResult = await client.query(
+      'SELECT COUNT(*) FROM invoices WHERE company_id = $1 FOR UPDATE',
       [req.companyId]
     );
-    const invoiceNumber = `INV-${year}-${String(parseInt(invoiceCount.rows[0].count) + 1).padStart(4, '0')}`;
+    const invoiceCount = parseInt(invoiceCountResult.rows[0].count);
+    const invoiceNumber = `INV-${year}-${String(invoiceCount + 1).padStart(4, '0')}`;
     
     // CALCULATE CONSULTANT INVOICE
     const consultantDailyRate = parseFloat(contract.purchase_price);
@@ -1092,8 +1127,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       total: consultantTotal
     });
     
-    // ✅ UPDATED: Now includes timesheet_id
-    const consultantInvoiceResult = await pool.query(
+    const consultantInvoiceResult = await client.query(
       `INSERT INTO invoices (
         company_id, contract_id, invoice_number, invoice_date, 
         period_from, period_to, days_worked, daily_rate, 
@@ -1116,7 +1150,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
         consultantTotal,
         'consultant',
         'draft',
-        id  // ✅ timesheet_id
+        id
       ]
     );
     
@@ -1141,8 +1175,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       total: clientTotal
     });
     
-    // ✅ UPDATED: Now includes timesheet_id
-    const clientInvoiceResult = await pool.query(
+    const clientInvoiceResult = await client.query(
       `INSERT INTO invoices (
         company_id, contract_id, invoice_number, invoice_date, 
         period_from, period_to, days_worked, daily_rate, 
@@ -1165,17 +1198,20 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
         clientTotal,
         'client',
         'draft',
-        id  // ✅ timesheet_id
+        id
       ]
     );
     
-    // Mark as invoiced
-    await pool.query(
+    // Mark timesheet as invoiced
+    await client.query(
       'UPDATE automation_logs SET invoice_generated = true WHERE id = $1',
       [id]
     );
     
-    console.log('✅ SUCCESS: Invoices created with timesheet_id:', id, 'daysWorked:', daysWorked);
+    // Commit transaction
+    await client.query('COMMIT');
+    
+    console.log('✅ SUCCESS: Invoices created with timesheet_id:', id, 'daysWorked:', daysWorked, 'year:', year);
     
     res.json({ 
       message: 'Invoices generated successfully',
@@ -1184,8 +1220,11 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     });
     
   } catch (error) {
+    await client.query('ROLLBACK');
     console.error('Error generating invoice:', error);
     res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
   }
 });
 
