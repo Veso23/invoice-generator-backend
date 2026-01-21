@@ -1198,7 +1198,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
 app.get('/api/timesheets/history', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT 
+      SELECT DISTINCT ON (al.id)
         al.*,
         c.first_name as consultant_first_name,
         c.last_name as consultant_last_name,
@@ -1220,8 +1220,9 @@ app.get('/api/timesheets/history', authenticateToken, checkCompanyAccess, async 
       LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email)) AND c.company_id = $1
       LEFT JOIN invoices ci ON ci.timesheet_id = al.id AND ci.invoice_type = 'consultant'
       LEFT JOIN invoices cli ON cli.timesheet_id = al.id AND cli.invoice_type = 'client'
-      WHERE al.company_id = $1
-      ORDER BY al.created_at DESC
+      WHERE al.company_id = $1 
+         OR (al.company_id IS NULL AND c.company_id = $1)
+      ORDER BY al.id, al.created_at DESC
     `, [req.companyId]);
 
     res.json(result.rows);
