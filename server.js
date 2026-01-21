@@ -1099,10 +1099,15 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     
     // ✅ FIXED: Generate invoice number with locking to prevent race condition
     // Lock the invoices table for this company while we get the count
+    await client.query(
+  'SELECT id FROM companies WHERE id = $1 FOR UPDATE',
+  [req.companyId]
+);
     const invoiceCountResult = await client.query(
-      'SELECT COUNT(*) FROM invoices WHERE company_id = $1 FOR UPDATE',
-      [req.companyId]
-    );
+  'SELECT COUNT(*) FROM invoices WHERE company_id = $1',
+  [req.companyId]
+);
+    
     const invoiceCount = parseInt(invoiceCountResult.rows[0].count);
     const invoiceNumber = `INV-${year}-${String(invoiceCount + 1).padStart(4, '0')}`;
     
