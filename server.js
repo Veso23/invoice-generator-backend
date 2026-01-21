@@ -1450,7 +1450,6 @@ app.get('/api/timesheets/all', authenticateToken, checkCompanyAccess, async (req
 });
 
 // Get timesheet status for all active consultants
-// GET timesheet status
 app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     // Get company settings for deadline
@@ -1491,18 +1490,29 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
       [req.companyId]
     );
     
-    // Get all timesheets (including those with NULL month)
+    // ✅ FIXED: Get ALL timesheets, also check by consultant email without requiring company_id
     const timesheetsResult = await pool.query(
-      `SELECT * FROM automation_logs 
-       WHERE company_id = $1 
+      `SELECT al.* FROM automation_logs al
+       WHERE al.company_id = $1
+       
+       UNION
+       
+       SELECT al.* FROM automation_logs al
+       INNER JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email))
+       WHERE c.company_id = $1
+       
        ORDER BY created_at DESC`,
       [req.companyId]
     );
     
     const consultants = consultantsResult.rows.map(consultant => {
+      // ✅ FIXED: Use case-insensitive email matching
+      const normalizedConsultantEmail = consultant.email?.trim().toLowerCase();
+      
       // Find matching timesheet - check both actual month AND estimated month
       const timesheet = timesheetsResult.rows.find(ts => {
-        if (ts.sender_email !== consultant.email) return false;
+        const normalizedSenderEmail = ts.sender_email?.trim().toLowerCase();
+        if (normalizedSenderEmail !== normalizedConsultantEmail) return false;
         
         // If month is set in PDF, match exactly
         if (ts.month) {
@@ -1515,13 +1525,26 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
         return estimatedMonth.toLowerCase() === checkingMonth.toLowerCase();
       });
       
+      // ✅ FIXED: Also check if any timesheet for this consultant was already invoiced for this month
+      const invoicedTimesheet = timesheetsResult.rows.find(ts => {
+        const normalizedSenderEmail = ts.sender_email?.trim().toLowerCase();
+        if (normalizedSenderEmail !== normalizedConsultantEmail) return false;
+        if (!ts.invoice_generated) return false;
+        
+        // Match by month
+        if (ts.month) {
+          return ts.month.toLowerCase() === checkingMonth.toLowerCase();
+        }
+        return false;
+      });
+      
       let status;
-      if (timesheet) {
-        status = 'received';
+      if (timesheet || invoicedTimesheet) {
+        status = 'received';  // ✅ Green - timesheet exists or was already invoiced
       } else if (isOverdue) {
-        status = 'overdue';
+        status = 'overdue';   // Red - past deadline, no timesheet
       } else {
-        status = 'waiting';
+        status = 'waiting';   // Yellow - before deadline, no timesheet yet
       }
       
       return {
@@ -1529,8 +1552,9 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
         status,
         checking_month: checkingMonth,
         checking_year: checkingYear,
-        has_timesheet: !!timesheet,
-        timesheet_processed: timesheet?.month ? true : false // Track if AI processed
+        has_timesheet: !!(timesheet || invoicedTimesheet),
+        timesheet_processed: (timesheet?.month || invoicedTimesheet?.month) ? true : false,
+        invoice_generated: invoicedTimesheet?.invoice_generated || timesheet?.invoice_generated || false
       };
     });
     
@@ -1548,6 +1572,7 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
     res.status(500).json({ error: error.message });
   }
 });
+
 
 // Update invoice VAT rate
 app.put('/api/invoices/:id/vat', authenticateToken, checkCompanyAccess, async (req, res) => {
