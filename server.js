@@ -1439,6 +1439,44 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
+// Delete a timesheet record (for problematic entries like no_pdf, multiple_pdfs)
+app.delete('/api/timesheets/:id', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Verify timesheet belongs to user's company
+    const checkResult = await pool.query(
+      `SELECT al.* FROM automation_logs al
+       LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email))
+       WHERE al.id = $1 AND (al.company_id = $2 OR c.company_id = $2)`,
+      [id, req.companyId]
+    );
+    
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Timesheet not found' });
+    }
+    
+    const timesheet = checkResult.rows[0];
+    
+    // Don't allow deleting if invoice was already generated
+    if (timesheet.invoice_generated) {
+      return res.status(400).json({ 
+        error: 'Cannot delete timesheet that has been invoiced' 
+      });
+    }
+    
+    // Delete the timesheet
+    await pool.query('DELETE FROM automation_logs WHERE id = $1', [id]);
+    
+    console.log('🗑️ Deleted timesheet:', id, 'status:', timesheet.status);
+    
+    res.json({ message: 'Timesheet deleted successfully' });
+  } catch (error) {
+    console.error('Delete timesheet error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get company settings
 app.get('/api/company/settings', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
