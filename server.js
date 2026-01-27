@@ -1118,10 +1118,18 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     console.log(`Found contract: ${contract.contract_number} (${contract.from_date} to ${contract.to_date})`);
     
     // ✅ Generate invoice number with locking to prevent race condition
-    const invoiceCountResult = await client.query(
-      'SELECT COUNT(*) FROM invoices WHERE company_id = $1 FOR UPDATE',
-      [req.companyId]
-    );
+    // Lock the invoices table for this company to prevent race conditions
+await client.query(
+  'SELECT id FROM invoices WHERE company_id = $1 FOR UPDATE',
+  [req.companyId]
+);
+
+// Now get the count
+const invoiceCountResult = await client.query(
+  'SELECT COUNT(*) FROM invoices WHERE company_id = $1',
+  [req.companyId]
+);
+    
     const invoiceCount = parseInt(invoiceCountResult.rows[0].count);
     const invoiceNumber = `INV-${year}-${String(invoiceCount + 1).padStart(4, '0')}`;
     
