@@ -2142,7 +2142,7 @@ app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, 
 app.get('/api/users', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT u.id, u.email, u.first_name, u.last_name, u.name, u.role, u.permissions, u.active, u.created_at, u.last_login,
+      SELECT u.id, u.email, u.first_name, u.last_name, u.role, u.permissions, u.active, u.created_at, u.last_login,
              creator.first_name as created_by_first_name, creator.last_name as created_by_last_name
       FROM users u
       LEFT JOIN users creator ON u.created_by = creator.id
@@ -2160,10 +2160,10 @@ app.get('/api/users', authenticateToken, requireAdmin, checkCompanyAccess, async
 // Create user account (Admin only) - UPDATED TO SUPPORT ADMIN/OPERATOR + PERMISSIONS
 app.post('/api/users', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
-    const { email, password, name, role, permissions } = req.body;
+    const { email, password, firstName, lastName, role, permissions } = req.body;
 
-    if (!email || !password || !name) {
-      return res.status(400).json({ error: 'Email, password, and name are required' });
+    if (!email || !password || !firstName || !lastName) {
+      return res.status(400).json({ error: 'Email, password, first name, and last name are required' });
     }
 
     // Validate role
@@ -2191,10 +2191,10 @@ app.post('/api/users', authenticateToken, requireAdmin, checkCompanyAccess, asyn
     // Create user
     const result = await pool.query(`
       INSERT INTO users 
-      (email, password_hash, name, company_id, role, permissions, active, created_by, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, true, $7, NOW())
-      RETURNING id, email, name, role, permissions, active, created_at
-    `, [email.toLowerCase(), hashedPassword, name, req.companyId, userRole, JSON.stringify(userPermissions), req.user.id]);
+      (email, password_hash, first_name, last_name, company_id, role, permissions, active, created_by, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, NOW())
+      RETURNING id, email, first_name, last_name, role, permissions, active, created_at
+    `, [email.toLowerCase(), hashedPassword, firstName, lastName, req.companyId, userRole, JSON.stringify(userPermissions), req.user.id]);
 
     console.log('✅ User created:', email, 'role:', userRole);
     
@@ -2212,7 +2212,7 @@ app.post('/api/users', authenticateToken, requireAdmin, checkCompanyAccess, asyn
 app.put('/api/users/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
-    const { email, name, role, permissions, password } = req.body;
+    const { email, firstName, lastName, role, permissions, password } = req.body;
 
     // Verify user belongs to same company
     const targetUser = await pool.query(
@@ -2249,9 +2249,13 @@ app.put('/api/users/:id', authenticateToken, requireAdmin, checkCompanyAccess, a
       updateFields.push(`email = $${valueIndex++}`);
       values.push(email.toLowerCase());
     }
-    if (name) {
-      updateFields.push(`name = $${valueIndex++}`);
-      values.push(name);
+    if (firstName) {
+      updateFields.push(`first_name = $${valueIndex++}`);
+      values.push(firstName);
+    }
+    if (lastName) {
+      updateFields.push(`last_name = $${valueIndex++}`);
+      values.push(lastName);
     }
     if (role) {
       updateFields.push(`role = $${valueIndex++}`);
@@ -2279,7 +2283,7 @@ app.put('/api/users/:id', authenticateToken, requireAdmin, checkCompanyAccess, a
       `UPDATE users 
        SET ${updateFields.join(', ')}
        WHERE id = $${valueIndex++} AND company_id = $${valueIndex}
-       RETURNING id, email, name, role, permissions, active, created_at`,
+       RETURNING id, email, first_name, last_name, role, permissions, active, created_at`,
       values
     );
 
