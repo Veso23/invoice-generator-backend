@@ -20,6 +20,30 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
+// ============================================
+// DEFAULT PERMISSIONS FOR EACH ROLE
+// ============================================
+const DEFAULT_PERMISSIONS = {
+  admin: {
+    can_view_dashboard: true,
+    can_view_contracts: true,
+    can_view_consultants: true,
+    can_view_clients: true,
+    can_view_timesheets: true,
+    can_view_invoices: true,
+    can_manage_users: true
+  },
+  operator: {
+    can_view_dashboard: false,
+    can_view_contracts: false,
+    can_view_consultants: true,
+    can_view_clients: true,
+    can_view_timesheets: true,
+    can_view_invoices: true,
+    can_manage_users: false
+  }
+};
+
 
 app.use(compression());
 app.use(morgan('combined'));
@@ -263,10 +287,12 @@ app.post('/api/auth/register', async (req, res) => {
       );
       const companyId = companyResult.rows[0].id;
 
-      // Create user - FIRST USER IS ALWAYS ADMIN
+      // Create user - FIRST USER IS ALWAYS ADMIN with full permissions
       const userResult = await client.query(
-        'INSERT INTO users (email, password_hash, first_name, last_name, company_id, role, active, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW()) RETURNING id, email, first_name, last_name, role, company_id, active',
-        [email, hashedPassword, firstName, lastName, companyId, 'admin', true] // ✅ Always 'admin'
+        `INSERT INTO users (email, password_hash, first_name, last_name, company_id, role, permissions, active, created_at) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW()) 
+         RETURNING id, email, first_name, last_name, role, permissions, company_id, active`,
+        [email, hashedPassword, firstName, lastName, companyId, 'admin', JSON.stringify(DEFAULT_PERMISSIONS.admin), true]
       );
 
       await client.query('COMMIT');
@@ -287,6 +313,7 @@ app.post('/api/auth/register', async (req, res) => {
           firstName: user.first_name,
           lastName: user.last_name,
           role: user.role,
+          permissions: user.permissions || DEFAULT_PERMISSIONS.admin,
           companyId: user.company_id,
           active: user.active
         }
@@ -303,6 +330,9 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
+// ============================================
+// LOGIN - UPDATED TO RETURN PERMISSIONS
+// ============================================
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -333,6 +363,7 @@ app.post('/api/auth/login', async (req, res) => {
       { expiresIn: '24h' }
     );
 
+    // ✅ UPDATED: Return permissions in login response
     res.json({
       token,
       user: {
@@ -341,6 +372,7 @@ app.post('/api/auth/login', async (req, res) => {
         firstName: user.first_name,
         lastName: user.last_name,
         role: user.role,
+        permissions: user.permissions || DEFAULT_PERMISSIONS[user.role] || DEFAULT_PERMISSIONS.operator,
         companyId: user.company_id,
         active: user.active
       }
@@ -2106,11 +2138,11 @@ app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, 
 // USER MANAGEMENT ENDPOINTS (Admin Only)
 // ============================================
 
-// Get all users in company (Admin only)
+// Get all users in company (Admin only) - UPDATED TO INCLUDE PERMISSIONS
 app.get('/api/users', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT u.id, u.email, u.first_name, u.last_name, u.role, u.active, u.created_at, u.last_login,
+      SELECT u.id, u.email, u.first_name, u.last_name, u.name, u.role, u.permissions, u.active, u.created_at, u.last_login,
              creator.first_name as created_by_first_name, creator.last_name as created_by_last_name
       FROM users u
       LEFT JOIN users creator ON u.created_by = creator.id
@@ -2125,17 +2157,23 @@ app.get('/api/users', authenticateToken, requireAdmin, checkCompanyAccess, async
   }
 });
 
-// Create operator account (Admin only)
+// Create user account (Admin only) - UPDATED TO SUPPORT ADMIN/OPERATOR + PERMISSIONS
 app.post('/api/users', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
-    const { email, password, firstName, lastName } = req.body;
+    const { email, password, name, role, permissions } = req.body;
 
-    if (!email || !password || !firstName || !lastName) {
-      return res.status(400).json({ error: 'All fields are required' });
+    if (!email || !password || !name) {
+      return res.status(400).json({ error: 'Email, password, and name are required' });
+    }
+
+    // Validate role
+    const userRole = role || 'operator';
+    if (!['admin', 'operator'].includes(userRole)) {
+      return res.status(400).json({ error: 'Invalid role. Must be admin or operator' });
     }
 
     // Check if email already exists
-    const existingUser = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    const existingUser = await pool.query('SELECT * FROM users WHERE email = $1', [email.toLowerCase()]);
     if (existingUser.rows.length > 0) {
       return res.status(400).json({ error: 'Email already exists' });
     }
@@ -2144,21 +2182,116 @@ app.post('/api/users', authenticateToken, requireAdmin, checkCompanyAccess, asyn
     const saltRounds = 12;
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
-    // Create operator
+    // Use provided permissions or defaults based on role
+    // If creating admin, force all permissions
+    const userPermissions = userRole === 'admin' 
+      ? DEFAULT_PERMISSIONS.admin 
+      : (permissions || DEFAULT_PERMISSIONS.operator);
+
+    // Create user
     const result = await pool.query(`
       INSERT INTO users 
-      (email, password_hash, first_name, last_name, company_id, role, active, created_by, created_at)
-      VALUES ($1, $2, $3, $4, $5, 'operator', true, $6, NOW())
-      RETURNING id, email, first_name, last_name, role, active, created_at
-    `, [email, hashedPassword, firstName, lastName, req.companyId, req.user.id]);
+      (email, password_hash, name, company_id, role, permissions, active, created_by, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, true, $7, NOW())
+      RETURNING id, email, name, role, permissions, active, created_at
+    `, [email.toLowerCase(), hashedPassword, name, req.companyId, userRole, JSON.stringify(userPermissions), req.user.id]);
 
+    console.log('✅ User created:', email, 'role:', userRole);
+    
     res.status(201).json({
-      message: 'Operator created successfully',
+      message: `${userRole === 'admin' ? 'Admin' : 'Operator'} created successfully`,
       user: result.rows[0]
     });
   } catch (error) {
-    console.error('Create operator error:', error);
+    console.error('Create user error:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// UPDATE user (Admin only) - NEW ENDPOINT
+app.put('/api/users/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { email, name, role, permissions, password } = req.body;
+
+    // Verify user belongs to same company
+    const targetUser = await pool.query(
+      'SELECT * FROM users WHERE id = $1 AND company_id = $2',
+      [id, req.companyId]
+    );
+    
+    if (targetUser.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Prevent changing your own role
+    if (parseInt(id) === req.user.id && role && role !== targetUser.rows[0].role) {
+      return res.status(400).json({ error: 'You cannot change your own role' });
+    }
+
+    // Validate role if provided
+    if (role && !['admin', 'operator'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role. Must be admin or operator' });
+    }
+
+    // If changing to admin, force all permissions
+    let finalPermissions = permissions;
+    if (role === 'admin') {
+      finalPermissions = DEFAULT_PERMISSIONS.admin;
+    }
+
+    // Build update query dynamically
+    let updateFields = [];
+    let values = [];
+    let valueIndex = 1;
+
+    if (email) {
+      updateFields.push(`email = $${valueIndex++}`);
+      values.push(email.toLowerCase());
+    }
+    if (name) {
+      updateFields.push(`name = $${valueIndex++}`);
+      values.push(name);
+    }
+    if (role) {
+      updateFields.push(`role = $${valueIndex++}`);
+      values.push(role);
+    }
+    if (finalPermissions) {
+      updateFields.push(`permissions = $${valueIndex++}`);
+      values.push(JSON.stringify(finalPermissions));
+    }
+    if (password) {
+      const hashedPassword = await bcrypt.hash(password, 12);
+      updateFields.push(`password_hash = $${valueIndex++}`);
+      values.push(hashedPassword);
+    }
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    updateFields.push(`updated_at = NOW()`);
+    values.push(id);
+    values.push(req.companyId);
+
+    const result = await pool.query(
+      `UPDATE users 
+       SET ${updateFields.join(', ')}
+       WHERE id = $${valueIndex++} AND company_id = $${valueIndex}
+       RETURNING id, email, name, role, permissions, active, created_at`,
+      values
+    );
+
+    console.log('✅ User updated:', id);
+    res.json({ message: 'User updated successfully', user: result.rows[0] });
+  } catch (error) {
+    console.error('Update user error:', error);
+    if (error.code === '23505') {
+      res.status(400).json({ error: 'Email already exists' });
+    } else {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 
