@@ -31,7 +31,8 @@ const DEFAULT_PERMISSIONS = {
     can_view_clients: true,
     can_view_timesheets: true,
     can_view_invoices: true,
-    can_manage_users: true
+    can_manage_users: true,
+    can_delete_timesheets: true
   },
   operator: {
     can_view_dashboard: false,
@@ -40,7 +41,8 @@ const DEFAULT_PERMISSIONS = {
     can_view_clients: true,
     can_view_timesheets: true,
     can_view_invoices: true,
-    can_manage_users: false
+    can_manage_users: false,
+    can_delete_timesheets: false
   }
 };
 
@@ -934,6 +936,45 @@ app.put('/api/timesheets/:id/month', authenticateToken, checkCompanyAccess, asyn
     res.status(500).json({ error: error.message });
   }
 });
+
+// Flag/unflag timesheet for review
+app.put('/api/timesheets/:id/flag-review', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { flagged } = req.body;
+    
+    // Verify timesheet belongs to user's company
+    const checkResult = await pool.query(
+      `SELECT al.* FROM automation_logs al
+       LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email))
+       WHERE al.id = $1 AND (al.company_id = $2 OR c.company_id = $2)`,
+      [id, req.companyId]
+    );
+    
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Timesheet not found' });
+    }
+    
+    const result = await pool.query(
+      `UPDATE automation_logs 
+       SET flagged_for_review = $1 
+       WHERE id = $2
+       RETURNING *`,
+      [flagged === true, id]
+    );
+    
+    console.log(`${flagged ? '🚩 Flagged' : '✅ Unflagged'} timesheet:`, id);
+    
+    res.json({ 
+      message: `Timesheet ${flagged ? 'flagged for review' : 'unflagged'}`,
+      timesheet: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Flag review error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Invoice Generation
 app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
