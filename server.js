@@ -872,8 +872,20 @@ app.put('/api/timesheets/:id/days', authenticateToken, checkCompanyAccess, async
     const { id } = req.params;
     const { days } = req.body;
 
-    if (!days || isNaN(days) || days < 0) {
+    if (days === undefined || days === null || isNaN(days) || days < 0) {
       return res.status(400).json({ error: 'Valid days value is required' });
+    }
+
+    // Verify timesheet belongs to user's company (check both company_id and consultant email)
+    const checkResult = await pool.query(
+      `SELECT al.* FROM automation_logs al
+       LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email))
+       WHERE al.id = $1 AND (al.company_id = $2 OR c.company_id = $2)`,
+      [id, req.companyId]
+    );
+
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Timesheet not found' });
     }
 
     const result = await pool.query(
@@ -881,11 +893,8 @@ app.put('/api/timesheets/:id/days', authenticateToken, checkCompanyAccess, async
       [days, id]
     );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Timesheet not found' });
-    }
-
-    res.json({ success: true, message: 'Days updated successfully' });
+    console.log('✅ Days updated for timesheet:', id, 'to:', days);
+    res.json({ success: true, message: 'Days updated successfully', timesheet: result.rows[0] });
   } catch (error) {
     console.error('Update timesheet days error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -898,11 +907,6 @@ app.put('/api/timesheets/:id/month', authenticateToken, checkCompanyAccess, asyn
     const { id } = req.params;
     const { month } = req.body;
     
-    // ✅ ADD LOGGING
-    console.log('Update month - Timesheet ID:', id);
-    console.log('Update month - User Company ID:', req.companyId);
-    console.log('Update month - Month:', month);
-    
     // Validate month
     const validMonths = ['January', 'February', 'March', 'April', 'May', 'June', 
                         'July', 'August', 'September', 'October', 'November', 'December'];
@@ -911,25 +915,27 @@ app.put('/api/timesheets/:id/month', authenticateToken, checkCompanyAccess, asyn
       return res.status(400).json({ error: 'Invalid month' });
     }
     
-    // Check what the actual timesheet has
+    // Verify timesheet belongs to user's company (check both company_id and consultant email)
     const checkResult = await pool.query(
-      'SELECT company_id FROM automation_logs WHERE id = $1',
-      [id]
+      `SELECT al.* FROM automation_logs al
+       LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email))
+       WHERE al.id = $1 AND (al.company_id = $2 OR c.company_id = $2)`,
+      [id, req.companyId]
     );
-    console.log('Timesheet company_id in DB:', checkResult.rows[0]?.company_id);
+    
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Timesheet not found' });
+    }
     
     const result = await pool.query(
       `UPDATE automation_logs 
        SET month = $1 
-       WHERE id = $2 AND company_id = $3
+       WHERE id = $2
        RETURNING *`,
-      [month, id, req.companyId]
+      [month, id]
     );
     
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Timesheet not found' });
-    }
-    
+    console.log('✅ Month updated for timesheet:', id, 'to:', month);
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Update month error:', error);
