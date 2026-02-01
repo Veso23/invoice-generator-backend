@@ -399,231 +399,271 @@ app.get('/api/consultants', authenticateToken, checkCompanyAccess, async (req, r
   }
 });
 
-app.post('/api/consultants', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+app.post('/api/consultants', authenticateToken, async (req, res) => {
   try {
-    const {
-      firstName, lastName, companyName, companyAddress,
-      companyVAT, iban, swift, phone, email, consultantContractId
+    const { 
+      firstName, lastName, companyName, companyAddress, companyVat, 
+      phone, email, iban, swift, consultantContractId 
     } = req.body;
 
-    if (!firstName || !lastName || !companyName || !companyVAT) {
-      return res.status(400).json({ error: 'Required fields: firstName, lastName, companyName, companyVAT' });
+    // Check for duplicates
+    const duplicateErrors = await checkDuplicates(pool, 'consultants', [
+      { field: 'company_vat', value: companyVat, label: 'Company VAT' },
+      { field: 'email', value: email, label: 'Email' },
+      { field: 'iban', value: iban, label: 'IBAN' },
+      { field: 'phone', value: phone, label: 'Phone' }
+    ]);
+
+    if (duplicateErrors.length > 0) {
+      return res.status(400).json({ 
+        error: 'Duplicate values found', 
+        details: duplicateErrors 
+      });
     }
 
+    // Continue with insert...
     const result = await pool.query(
-      `INSERT INTO consultants 
-       (first_name, last_name, company_name, company_address, company_vat, iban, swift, phone, email, consultant_contract_id, company_id, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW()) 
-       RETURNING *`,
-      [firstName, lastName, companyName, companyAddress, companyVAT, iban, swift, phone, email, consultantContractId, req.companyId]
+      `INSERT INTO consultants (first_name, last_name, company_name, company_address, company_vat, phone, email, iban, swift, consultant_contract_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [firstName, lastName, companyName, companyAddress, companyVat, phone, email, iban, swift, consultantContractId]
     );
-
-    res.status(201).json(result.rows[0]);
+    
+    res.json(result.rows[0]);
   } catch (error) {
-    console.error('Create consultant error:', error);
-    if (error.code === '23505') {
-      res.status(400).json({ error: 'VAT number or Contract ID already exists' });
-    } else {
-      res.status(500).json({ error: 'Internal server error' });
+    // Handle unique constraint violations from database
+    if (error.code === '23505') { // PostgreSQL unique violation
+      return res.status(400).json({ 
+        error: 'Duplicate value', 
+        details: [error.detail] 
+      });
     }
+    console.error('Error adding consultant:', error);
+    res.status(500).json({ error: 'Failed to add consultant' });
   }
 });
 
-// Update consultant (Admin only)
-app.put('/api/consultants/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+// PUT /api/consultants/:id - Update consultant
+app.put('/api/consultants/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const {
-      firstName, lastName, companyName, companyAddress,
-      companyVAT, iban, swift, phone, email, consultantContractId
+    const { 
+      firstName, lastName, companyName, companyAddress, companyVat, 
+      phone, email, iban, swift, consultantContractId 
     } = req.body;
 
-    // Verify consultant belongs to company
-    const checkResult = await pool.query(
-      'SELECT id FROM consultants WHERE id = $1 AND company_id = $2',
-      [id, req.companyId]
-    );
+    // Check for duplicates (excluding current record)
+    const duplicateErrors = await checkDuplicates(pool, 'consultants', [
+      { field: 'company_vat', value: companyVat, label: 'Company VAT' },
+      { field: 'email', value: email, label: 'Email' },
+      { field: 'iban', value: iban, label: 'IBAN' },
+      { field: 'phone', value: phone, label: 'Phone' }
+    ], id); // Pass ID to exclude from duplicate check
 
-    if (checkResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Consultant not found' });
+    if (duplicateErrors.length > 0) {
+      return res.status(400).json({ 
+        error: 'Duplicate values found', 
+        details: duplicateErrors 
+      });
     }
 
+    // Continue with update...
     const result = await pool.query(
       `UPDATE consultants 
-       SET first_name = $1, last_name = $2, company_name = $3, company_address = $4,
-           company_vat = $5, iban = $6, swift = $7, phone = $8, email = $9,
-           consultant_contract_id = $10, updated_at = NOW()
-       WHERE id = $11 AND company_id = $12
-       RETURNING *`,
-      [firstName, lastName, companyName, companyAddress, companyVAT, iban, swift, 
-       phone, email, consultantContractId, id, req.companyId]
+       SET first_name = $1, last_name = $2, company_name = $3, company_address = $4, 
+           company_vat = $5, phone = $6, email = $7, iban = $8, swift = $9, consultant_contract_id = $10
+       WHERE id = $11 RETURNING *`,
+      [firstName, lastName, companyName, companyAddress, companyVat, phone, email, iban, swift, consultantContractId, id]
     );
-
-    res.json({ message: 'Consultant updated successfully', consultant: result.rows[0] });
+    
+    res.json(result.rows[0]);
   } catch (error) {
-    console.error('Update consultant error:', error);
     if (error.code === '23505') {
-      res.status(400).json({ error: 'VAT number or Contract ID already exists' });
-    } else {
-      res.status(500).json({ error: error.message });
+      return res.status(400).json({ 
+        error: 'Duplicate value', 
+        details: [error.detail] 
+      });
     }
+    console.error('Error updating consultant:', error);
+    res.status(500).json({ error: 'Failed to update consultant' });
   }
 });
 
-// Delete consultant (Admin only)
-app.delete('/api/consultants/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+
+// =============================================
+// UPDATE YOUR CLIENT ROUTES (same pattern)
+// =============================================
+
+// POST /api/clients - Add client
+app.post('/api/clients', authenticateToken, async (req, res) => {
   try {
-    const { id } = req.params;
+    const { 
+      firstName, lastName, companyName, companyAddress, companyVat, 
+      phone, email, iban, swift, clientContractId 
+    } = req.body;
 
-    // Check if consultant has contracts
-    const contractCheck = await pool.query(
-      'SELECT COUNT(*) as count FROM contracts WHERE consultant_id = $1',
-      [id]
-    );
+    // Check for duplicates
+    const duplicateErrors = await checkDuplicates(pool, 'clients', [
+      { field: 'company_vat', value: companyVat, label: 'Company VAT' },
+      { field: 'email', value: email, label: 'Email' },
+      { field: 'iban', value: iban, label: 'IBAN' },
+      { field: 'phone', value: phone, label: 'Phone' }
+    ]);
 
-    if (parseInt(contractCheck.rows[0].count) > 0) {
+    if (duplicateErrors.length > 0) {
       return res.status(400).json({ 
-        error: 'Cannot delete consultant with existing contracts. Delete contracts first.' 
+        error: 'Duplicate values found', 
+        details: duplicateErrors 
       });
     }
 
-    // Verify consultant belongs to company
-    const checkResult = await pool.query(
-      'SELECT id FROM consultants WHERE id = $1 AND company_id = $2',
-      [id, req.companyId]
-    );
-
-    if (checkResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Consultant not found' });
-    }
-
-    await pool.query('DELETE FROM consultants WHERE id = $1', [id]);
-    res.json({ message: 'Consultant deleted successfully' });
-  } catch (error) {
-    console.error('Delete consultant error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Client Routes
-app.get('/api/clients', authenticateToken, checkCompanyAccess, async (req, res) => {
-  try {
+    // Continue with insert...
     const result = await pool.query(
-      'SELECT * FROM clients WHERE company_id = $1 ORDER BY created_at DESC',
-      [req.companyId]
+      `INSERT INTO clients (first_name, last_name, company_name, company_address, company_vat, phone, email, iban, swift, client_contract_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [firstName, lastName, companyName, companyAddress, companyVat, phone, email, iban, swift, clientContractId]
     );
-    res.json(result.rows);
+    
+    res.json(result.rows[0]);
   } catch (error) {
-    console.error('Get clients error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-app.post('/api/clients', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
-  try {
-    const {
-      firstName, lastName, companyName, companyAddress,
-      companyVAT, iban, swift, phone, email, clientContractId
-    } = req.body;
-
-    if (!firstName || !lastName || !companyName || !companyVAT) {
-      return res.status(400).json({ error: 'Required fields: firstName, lastName, companyName, companyVAT' });
-    }
-
-    const result = await pool.query(
-      `INSERT INTO clients 
-       (first_name, last_name, company_name, company_address, company_vat, iban, swift, phone, email, client_contract_id, company_id, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW()) 
-       RETURNING *`,
-      [firstName, lastName, companyName, companyAddress, companyVAT, iban, swift, phone, email, clientContractId, req.companyId]
-    );
-
-    res.status(201).json(result.rows[0]);
-  } catch (error) {
-    console.error('Create client error:', error);
     if (error.code === '23505') {
-      res.status(400).json({ error: 'VAT number or Contract ID already exists' });
-    } else {
-      res.status(500).json({ error: 'Internal server error' });
+      return res.status(400).json({ 
+        error: 'Duplicate value', 
+        details: [error.detail] 
+      });
     }
+    console.error('Error adding client:', error);
+    res.status(500).json({ error: 'Failed to add client' });
   }
 });
 
-// Update client (Admin only)
-app.put('/api/clients/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+const checkDuplicates = async (pool, table, fields, excludeId = null) => {
+  const errors = [];
+  
+  for (const { field, value, label } of fields) {
+    if (!value || value.trim() === '') continue; // Skip empty values
+    
+    let query = `SELECT id FROM ${table} WHERE LOWER(${field}) = LOWER($1)`;
+    const params = [value.trim()];
+    
+    if (excludeId) {
+      query += ` AND id != $2`;
+      params.push(excludeId);
+    }
+    
+    const result = await pool.query(query, params);
+    if (result.rows.length > 0) {
+      errors.push(`${label} "${value}" already exists`);
+    }
+  }
+  
+  return errors;
+};
+
+// PUT /api/clients/:id - Update client  
+app.put('/api/clients/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const {
-      firstName, lastName, companyName, companyAddress,
-      companyVAT, iban, swift, phone, email, clientContractId
+    const { 
+      firstName, lastName, companyName, companyAddress, companyVat, 
+      phone, email, iban, swift, clientContractId 
     } = req.body;
 
-    // Verify client belongs to company
-    const checkResult = await pool.query(
-      'SELECT id FROM clients WHERE id = $1 AND company_id = $2',
-      [id, req.companyId]
-    );
+    // Check for duplicates (excluding current record)
+    const duplicateErrors = await checkDuplicates(pool, 'clients', [
+      { field: 'company_vat', value: companyVat, label: 'Company VAT' },
+      { field: 'email', value: email, label: 'Email' },
+      { field: 'iban', value: iban, label: 'IBAN' },
+      { field: 'phone', value: phone, label: 'Phone' }
+    ], id);
 
-    if (checkResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Client not found' });
+    if (duplicateErrors.length > 0) {
+      return res.status(400).json({ 
+        error: 'Duplicate values found', 
+        details: duplicateErrors 
+      });
     }
 
+    // Continue with update...
     const result = await pool.query(
       `UPDATE clients 
-       SET first_name = $1, last_name = $2, company_name = $3, company_address = $4,
-           company_vat = $5, iban = $6, swift = $7, phone = $8, email = $9,
-           client_contract_id = $10, updated_at = NOW()
-       WHERE id = $11 AND company_id = $12
-       RETURNING *`,
-      [firstName, lastName, companyName, companyAddress, companyVAT, iban, swift, 
-       phone, email, clientContractId, id, req.companyId]
+       SET first_name = $1, last_name = $2, company_name = $3, company_address = $4, 
+           company_vat = $5, phone = $6, email = $7, iban = $8, swift = $9, client_contract_id = $10
+       WHERE id = $11 RETURNING *`,
+      [firstName, lastName, companyName, companyAddress, companyVat, phone, email, iban, swift, clientContractId, id]
     );
-
-    res.json({ message: 'Client updated successfully', client: result.rows[0] });
+    
+    res.json(result.rows[0]);
   } catch (error) {
-    console.error('Update client error:', error);
     if (error.code === '23505') {
-      res.status(400).json({ error: 'VAT number or Contract ID already exists' });
-    } else {
-      res.status(500).json({ error: error.message });
-    }
-  }
-});
-
-// Delete client (Admin only)
-app.delete('/api/clients/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Check if client has contracts
-    const contractCheck = await pool.query(
-      'SELECT COUNT(*) as count FROM contracts WHERE client_id = $1',
-      [id]
-    );
-
-    if (parseInt(contractCheck.rows[0].count) > 0) {
       return res.status(400).json({ 
-        error: 'Cannot delete client with existing contracts. Delete contracts first.' 
+        error: 'Duplicate value', 
+        details: [error.detail] 
       });
     }
-
-    // Verify client belongs to company
-    const checkResult = await pool.query(
-      'SELECT id FROM clients WHERE id = $1 AND company_id = $2',
-      [id, req.companyId]
-    );
-
-    if (checkResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Client not found' });
-    }
-
-    await pool.query('DELETE FROM clients WHERE id = $1', [id]);
-    res.json({ message: 'Client deleted successfully' });
-  } catch (error) {
-    console.error('Delete client error:', error);
-    res.status(500).json({ error: error.message });
+    console.error('Error updating client:', error);
+    res.status(500).json({ error: 'Failed to update client' });
   }
 });
+
+
+// =============================================
+// UPDATE CSV BULK UPLOAD TO CHECK DUPLICATES
+// =============================================
+
+// In your CSV upload route, add validation before inserting each row:
+// Example for consultants bulk upload:
+
+app.post('/api/consultants/bulk', authenticateToken, async (req, res) => {
+  try {
+    const { consultants } = req.body;
+    const results = { success: [], errors: [] };
+    
+    for (const consultant of consultants) {
+      // Check for duplicates
+      const duplicateErrors = await checkDuplicates(pool, 'consultants', [
+        { field: 'company_vat', value: consultant.companyVat, label: 'Company VAT' },
+        { field: 'email', value: consultant.email, label: 'Email' },
+        { field: 'iban', value: consultant.iban, label: 'IBAN' },
+        { field: 'phone', value: consultant.phone, label: 'Phone' }
+      ]);
+
+      if (duplicateErrors.length > 0) {
+        results.errors.push({
+          consultant: `${consultant.firstName} ${consultant.lastName}`,
+          errors: duplicateErrors
+        });
+        continue; // Skip this record
+      }
+
+      // Insert the consultant
+      try {
+        const result = await pool.query(
+          `INSERT INTO consultants (first_name, last_name, company_name, company_address, company_vat, phone, email, iban, swift, consultant_contract_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+          [consultant.firstName, consultant.lastName, consultant.companyName, consultant.companyAddress, 
+           consultant.companyVat, consultant.phone, consultant.email, consultant.iban, consultant.swift, 
+           consultant.consultantContractId]
+        );
+        results.success.push(result.rows[0]);
+      } catch (dbError) {
+        results.errors.push({
+          consultant: `${consultant.firstName} ${consultant.lastName}`,
+          errors: [dbError.message]
+        });
+      }
+    }
+    
+    res.json({
+      message: `Imported ${results.success.length} consultants, ${results.errors.length} failed`,
+      success: results.success,
+      errors: results.errors
+    });
+  } catch (error) {
+    console.error('Bulk upload error:', error);
+    res.status(500).json({ error: 'Bulk upload failed' });
+  }
+});
+
 
 // Contract Routes
 app.get('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res) => {
