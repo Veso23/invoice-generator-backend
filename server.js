@@ -232,6 +232,41 @@ const checkCompanyAccess = (req, res, next) => {
   next();
 };
 
+// =============================================
+// HELPER: Check for duplicates (scoped by company)
+// =============================================
+const checkDuplicates = async (pool, table, fields, excludeId = null, companyId = null) => {
+  const errors = [];
+  
+  for (const { field, value, label } of fields) {
+    if (!value || value.trim() === '') continue; // Skip empty values
+    
+    let query = `SELECT id FROM ${table} WHERE LOWER(${field}) = LOWER($1)`;
+    const params = [value.trim()];
+    let paramIndex = 2;
+    
+    // Scope to company if provided
+    if (companyId) {
+      query += ` AND company_id = $${paramIndex}`;
+      params.push(companyId);
+      paramIndex++;
+    }
+    
+    // Exclude current record if updating
+    if (excludeId) {
+      query += ` AND id != $${paramIndex}`;
+      params.push(excludeId);
+    }
+    
+    const result = await pool.query(query, params);
+    if (result.rows.length > 0) {
+      errors.push(`${label} "${value}" already exists`);
+    }
+  }
+  
+  return errors;
+};
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
@@ -385,7 +420,11 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Consultant Routes
+// =============================================
+// CONSULTANT ROUTES - FIXED WITH company_id
+// =============================================
+
+// GET all consultants
 app.get('/api/consultants', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(
@@ -399,6 +438,7 @@ app.get('/api/consultants', authenticateToken, checkCompanyAccess, async (req, r
   }
 });
 
+// POST - Add consultant (✅ FIXED: Added checkCompanyAccess and company_id)
 app.post('/api/consultants', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { 
@@ -412,7 +452,7 @@ app.post('/api/consultants', authenticateToken, checkCompanyAccess, async (req, 
       { field: 'email', value: email, label: 'Email' },
       { field: 'iban', value: iban, label: 'IBAN' },
       { field: 'phone', value: phone, label: 'Phone' }
-    ], null, req.companyId);  // Pass companyId for scoped duplicate check
+    ], null, req.companyId);  // ✅ Pass companyId for scoped duplicate check
 
     if (duplicateErrors.length > 0) {
       return res.status(400).json({ 
@@ -430,7 +470,8 @@ app.post('/api/consultants', authenticateToken, checkCompanyAccess, async (req, 
     
     res.json(result.rows[0]);
   } catch (error) {
-    if (error.code === '23505') {
+    // Handle unique constraint violations from database
+    if (error.code === '23505') { // PostgreSQL unique violation
       return res.status(400).json({ 
         error: 'Duplicate value', 
         details: [error.detail] 
@@ -441,7 +482,7 @@ app.post('/api/consultants', authenticateToken, checkCompanyAccess, async (req, 
   }
 });
 
-// PUT /api/consultants/:id - Update consultant
+// PUT - Update consultant (✅ FIXED: Added checkCompanyAccess and company scoping)
 app.put('/api/consultants/:id', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
@@ -460,13 +501,13 @@ app.put('/api/consultants/:id', authenticateToken, checkCompanyAccess, async (re
       return res.status(404).json({ error: 'Consultant not found' });
     }
 
-    // Check for duplicates (excluding current record)
+    // Check for duplicates (excluding current record, scoped to company)
     const duplicateErrors = await checkDuplicates(pool, 'consultants', [
       { field: 'company_vat', value: companyVat, label: 'Company VAT' },
       { field: 'email', value: email, label: 'Email' },
       { field: 'iban', value: iban, label: 'IBAN' },
       { field: 'phone', value: phone, label: 'Phone' }
-    ], id, req.companyId);
+    ], id, req.companyId);  // ✅ Pass both excludeId and companyId
 
     if (duplicateErrors.length > 0) {
       return res.status(400).json({ 
@@ -475,6 +516,7 @@ app.put('/api/consultants/:id', authenticateToken, checkCompanyAccess, async (re
       });
     }
 
+    // ✅ FIXED: Scope update to company
     const result = await pool.query(
       `UPDATE consultants 
        SET first_name = $1, last_name = $2, company_name = $3, company_address = $4, 
@@ -496,7 +538,7 @@ app.put('/api/consultants/:id', authenticateToken, checkCompanyAccess, async (re
   }
 });
 
-// DELETE consultant (add if missing)
+// DELETE consultant
 app.delete('/api/consultants/:id', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
@@ -531,48 +573,25 @@ app.delete('/api/consultants/:id', authenticateToken, checkCompanyAccess, async 
   }
 });
 
+// =============================================
+// CLIENT ROUTES - FIXED WITH company_id
+// =============================================
 
-// =============================================
-// ALSO FIX: checkDuplicates function to scope by company
-// =============================================
-const checkDuplicates = async (pool, table, fields, excludeId = null, companyId = null) => {
-  const errors = [];
-  
-  for (const { field, value, label } of fields) {
-    if (!value || value.trim() === '') continue; // Skip empty values
-    
-    let query = `SELECT id FROM ${table} WHERE LOWER(${field}) = LOWER($1)`;
-    const params = [value.trim()];
-    let paramIndex = 2;
-    
-    // Scope to company if provided
-    if (companyId) {
-      query += ` AND company_id = $${paramIndex}`;
-      params.push(companyId);
-      paramIndex++;
-    }
-    
-    // Exclude current record if updating
-    if (excludeId) {
-      query += ` AND id != $${paramIndex}`;
-      params.push(excludeId);
-    }
-    
-    const result = await pool.query(query, params);
-    if (result.rows.length > 0) {
-      errors.push(`${label} "${value}" already exists`);
-    }
+// GET all clients
+app.get('/api/clients', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM clients WHERE company_id = $1 ORDER BY created_at DESC',
+      [req.companyId]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get clients error:', error);
+    res.status(500).json({ error: 'Internal server error' });
   }
-  
-  return errors;
-};
+});
 
-
-// =============================================
-// FIXED CLIENT ROUTES (same pattern)
-// =============================================
-
-// POST /api/clients - Add client (FIXED)
+// POST - Add client (✅ FIXED: Added checkCompanyAccess and company_id)
 app.post('/api/clients', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { 
@@ -580,13 +599,13 @@ app.post('/api/clients', authenticateToken, checkCompanyAccess, async (req, res)
       phone, email, iban, swift, clientContractId 
     } = req.body;
 
-    // Check for duplicates
+    // Check for duplicates within the same company
     const duplicateErrors = await checkDuplicates(pool, 'clients', [
       { field: 'company_vat', value: companyVat, label: 'Company VAT' },
       { field: 'email', value: email, label: 'Email' },
       { field: 'iban', value: iban, label: 'IBAN' },
       { field: 'phone', value: phone, label: 'Phone' }
-    ], null, req.companyId);
+    ], null, req.companyId);  // ✅ Pass companyId
 
     if (duplicateErrors.length > 0) {
       return res.status(400).json({ 
@@ -615,7 +634,7 @@ app.post('/api/clients', authenticateToken, checkCompanyAccess, async (req, res)
   }
 });
 
-// PUT /api/clients/:id - Update client (FIXED)
+// PUT - Update client (✅ FIXED: Added checkCompanyAccess and company scoping)
 app.put('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
@@ -634,13 +653,13 @@ app.put('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req, r
       return res.status(404).json({ error: 'Client not found' });
     }
 
-    // Check for duplicates (excluding current record)
+    // Check for duplicates (excluding current record, scoped to company)
     const duplicateErrors = await checkDuplicates(pool, 'clients', [
       { field: 'company_vat', value: companyVat, label: 'Company VAT' },
       { field: 'email', value: email, label: 'Email' },
       { field: 'iban', value: iban, label: 'IBAN' },
       { field: 'phone', value: phone, label: 'Phone' }
-    ], id, req.companyId);
+    ], id, req.companyId);  // ✅ Pass both excludeId and companyId
 
     if (duplicateErrors.length > 0) {
       return res.status(400).json({ 
@@ -649,6 +668,7 @@ app.put('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req, r
       });
     }
 
+    // ✅ FIXED: Scope update to company
     const result = await pool.query(
       `UPDATE clients 
        SET first_name = $1, last_name = $2, company_name = $3, company_address = $4, 
@@ -702,6 +722,60 @@ app.delete('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req
   } catch (error) {
     console.error('Delete client error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// =============================================
+// BULK UPLOAD - FIXED WITH company_id
+// =============================================
+app.post('/api/consultants/bulk', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { consultants } = req.body;
+    const results = { success: [], errors: [] };
+    
+    for (const consultant of consultants) {
+      // Check for duplicates (scoped to company)
+      const duplicateErrors = await checkDuplicates(pool, 'consultants', [
+        { field: 'company_vat', value: consultant.companyVat, label: 'Company VAT' },
+        { field: 'email', value: consultant.email, label: 'Email' },
+        { field: 'iban', value: consultant.iban, label: 'IBAN' },
+        { field: 'phone', value: consultant.phone, label: 'Phone' }
+      ], null, req.companyId);  // ✅ Pass companyId
+
+      if (duplicateErrors.length > 0) {
+        results.errors.push({
+          consultant: `${consultant.firstName} ${consultant.lastName}`,
+          errors: duplicateErrors
+        });
+        continue; // Skip this record
+      }
+
+      // Insert the consultant with company_id
+      try {
+        const result = await pool.query(
+          `INSERT INTO consultants (first_name, last_name, company_name, company_address, company_vat, phone, email, iban, swift, consultant_contract_id, company_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+          [consultant.firstName, consultant.lastName, consultant.companyName, consultant.companyAddress, 
+           consultant.companyVat, consultant.phone, consultant.email, consultant.iban, consultant.swift, 
+           consultant.consultantContractId, req.companyId]  // ✅ Added company_id
+        );
+        results.success.push(result.rows[0]);
+      } catch (dbError) {
+        results.errors.push({
+          consultant: `${consultant.firstName} ${consultant.lastName}`,
+          errors: [dbError.message]
+        });
+      }
+    }
+    
+    res.json({
+      message: `Imported ${results.success.length} consultants, ${results.errors.length} failed`,
+      success: results.success,
+      errors: results.errors
+    });
+  } catch (error) {
+    console.error('Bulk upload error:', error);
+    res.status(500).json({ error: 'Bulk upload failed' });
   }
 });
 
@@ -1730,100 +1804,66 @@ app.get('/api/timesheets/all', authenticateToken, checkCompanyAccess, async (req
 // Get timesheet status for all active consultants
 app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
-    // Get company settings for deadline
     const settingsResult = await pool.query(
       'SELECT timesheet_deadline_day FROM companies WHERE id = $1',
       [req.companyId]
     );
     
     const deadlineDay = settingsResult.rows[0]?.timesheet_deadline_day || 15;
-    
-    // Determine which month we're checking
     const now = new Date();
     const currentDay = now.getDate();
     const checkingDate = currentDay <= deadlineDay 
-      ? new Date(now.getFullYear(), now.getMonth() - 1, 1) // Check previous month
-      : new Date(now.getFullYear(), now.getMonth(), 1);     // Check current month
+      ? new Date(now.getFullYear(), now.getMonth() - 1, 1)
+      : new Date(now.getFullYear(), now.getMonth(), 1);
     
     const checkingMonth = checkingDate.toLocaleDateString('en-US', { month: 'long' });
     const checkingYear = checkingDate.getFullYear();
-    
-    // Calculate deadline date
     const deadlineDate = new Date(checkingYear, checkingDate.getMonth(), deadlineDay);
     const isOverdue = now > deadlineDate;
     
-    // Get all consultants in active contracts
     const consultantsResult = await pool.query(
-      `SELECT DISTINCT 
-        c.id,
-        c.first_name,
-        c.last_name,
-        c.company_name,
-        c.email
+      `SELECT DISTINCT c.id, c.first_name, c.last_name, c.company_name, c.email
        FROM consultants c
        INNER JOIN contracts ct ON c.id = ct.consultant_id
-       WHERE c.company_id = $1 
-       AND ct.status = 'active'
+       WHERE c.company_id = $1 AND ct.status = 'active'
        ORDER BY c.last_name, c.first_name`,
       [req.companyId]
     );
     
-    // ✅ FIXED: Get ALL timesheets, also check by consultant email without requiring company_id
     const timesheetsResult = await pool.query(
-      `SELECT al.* FROM automation_logs al
-       WHERE al.company_id = $1
-       
+      `SELECT al.* FROM automation_logs al WHERE al.company_id = $1
        UNION
-       
        SELECT al.* FROM automation_logs al
        INNER JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email))
        WHERE c.company_id = $1
-       
        ORDER BY created_at DESC`,
       [req.companyId]
     );
     
     const consultants = consultantsResult.rows.map(consultant => {
-      // ✅ FIXED: Use case-insensitive email matching
       const normalizedConsultantEmail = consultant.email?.trim().toLowerCase();
       
-      // Find matching timesheet - check both actual month AND estimated month
       const timesheet = timesheetsResult.rows.find(ts => {
         const normalizedSenderEmail = ts.sender_email?.trim().toLowerCase();
         if (normalizedSenderEmail !== normalizedConsultantEmail) return false;
-        
-        // If month is set in PDF, match exactly
-        if (ts.month) {
-          return ts.month.toLowerCase() === checkingMonth.toLowerCase();
-        }
-        
-        // If month is NULL, estimate from created_at
+        if (ts.month) return ts.month.toLowerCase() === checkingMonth.toLowerCase();
         const createdDate = new Date(ts.created_at);
         const estimatedMonth = createdDate.toLocaleDateString('en-US', { month: 'long' });
         return estimatedMonth.toLowerCase() === checkingMonth.toLowerCase();
       });
       
-      // ✅ FIXED: Also check if any timesheet for this consultant was already invoiced for this month
       const invoicedTimesheet = timesheetsResult.rows.find(ts => {
         const normalizedSenderEmail = ts.sender_email?.trim().toLowerCase();
         if (normalizedSenderEmail !== normalizedConsultantEmail) return false;
         if (!ts.invoice_generated) return false;
-        
-        // Match by month
-        if (ts.month) {
-          return ts.month.toLowerCase() === checkingMonth.toLowerCase();
-        }
+        if (ts.month) return ts.month.toLowerCase() === checkingMonth.toLowerCase();
         return false;
       });
       
       let status;
-      if (timesheet || invoicedTimesheet) {
-        status = 'received';  // ✅ Green - timesheet exists or was already invoiced
-      } else if (isOverdue) {
-        status = 'overdue';   // Red - past deadline, no timesheet
-      } else {
-        status = 'waiting';   // Yellow - before deadline, no timesheet yet
-      }
+      if (timesheet || invoicedTimesheet) status = 'received';
+      else if (isOverdue) status = 'overdue';
+      else status = 'waiting';
       
       return {
         ...consultant,
@@ -1844,13 +1884,11 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
       is_overdue: isOverdue,
       consultants
     });
-    
   } catch (error) {
     console.error('Timesheet status error:', error);
     res.status(500).json({ error: error.message });
   }
 });
-
 
 // Update invoice VAT rate
 app.put('/api/invoices/:id/vat', authenticateToken, checkCompanyAccess, async (req, res) => {
@@ -1858,7 +1896,6 @@ app.put('/api/invoices/:id/vat', authenticateToken, checkCompanyAccess, async (r
     const { id } = req.params;
     const { vatRate } = req.body;
     
-    // Get current invoice
     const invoiceResult = await pool.query(
       'SELECT * FROM invoices WHERE id = $1 AND company_id = $2',
       [id, req.companyId]
@@ -1871,27 +1908,16 @@ app.put('/api/invoices/:id/vat', authenticateToken, checkCompanyAccess, async (r
     const invoice = invoiceResult.rows[0];
     const subtotal = parseFloat(invoice.subtotal);
     const vatEnabled = invoice.vat_enabled !== false;
-    
-    // Recalculate amounts
     const newVatAmount = vatEnabled ? (subtotal * vatRate / 100) : 0;
     const newTotal = subtotal + newVatAmount;
     
-    // Update invoice
     const result = await pool.query(
-      `UPDATE invoices 
-       SET vat_rate = $1, 
-           vat_amount = $2, 
-           total_amount = $3,
-           updated_at = NOW()
-       WHERE id = $4 AND company_id = $5
-       RETURNING *`,
+      `UPDATE invoices SET vat_rate = $1, vat_amount = $2, total_amount = $3, updated_at = NOW()
+       WHERE id = $4 AND company_id = $5 RETURNING *`,
       [vatRate, newVatAmount, newTotal, id, req.companyId]
     );
     
-    res.json({ 
-      message: 'VAT rate updated successfully', 
-      invoice: result.rows[0] 
-    });
+    res.json({ message: 'VAT rate updated successfully', invoice: result.rows[0] });
   } catch (error) {
     console.error('Update VAT rate error:', error);
     res.status(500).json({ error: error.message });
@@ -1904,7 +1930,6 @@ app.put('/api/invoices/:id/vat-toggle', authenticateToken, checkCompanyAccess, a
     const { id } = req.params;
     const { vatEnabled } = req.body;
     
-    // Get current invoice
     const invoiceResult = await pool.query(
       'SELECT * FROM invoices WHERE id = $1 AND company_id = $2',
       [id, req.companyId]
@@ -1917,33 +1942,21 @@ app.put('/api/invoices/:id/vat-toggle', authenticateToken, checkCompanyAccess, a
     const invoice = invoiceResult.rows[0];
     const subtotal = parseFloat(invoice.subtotal);
     const vatRate = parseFloat(invoice.vat_rate);
-    
-    // Recalculate amounts
     const newVatAmount = vatEnabled ? (subtotal * vatRate / 100) : 0;
     const newTotal = subtotal + newVatAmount;
     
-    // Update invoice
     const result = await pool.query(
-      `UPDATE invoices 
-       SET vat_enabled = $1,
-           vat_amount = $2, 
-           total_amount = $3,
-           updated_at = NOW()
-       WHERE id = $4 AND company_id = $5
-       RETURNING *`,
+      `UPDATE invoices SET vat_enabled = $1, vat_amount = $2, total_amount = $3, updated_at = NOW()
+       WHERE id = $4 AND company_id = $5 RETURNING *`,
       [vatEnabled, newVatAmount, newTotal, id, req.companyId]
     );
     
-    res.json({ 
-      message: `VAT ${vatEnabled ? 'enabled' : 'disabled'} successfully`, 
-      invoice: result.rows[0] 
-    });
+    res.json({ message: `VAT ${vatEnabled ? 'enabled' : 'disabled'} successfully`, invoice: result.rows[0] });
   } catch (error) {
     console.error('Toggle VAT error:', error);
     res.status(500).json({ error: error.message });
   }
 });
-
 
 // Generate PDF for an invoice
 app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess, async (req, res) => {
@@ -1951,32 +1964,16 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     const { id } = req.params;
     const PDFDocument = require('pdfkit');
     
-    // Get invoice with all related data
     const invoiceResult = await pool.query(`
-      SELECT i.*,
-             c.consultant_id, c.client_id,
-             c.consultant_contract_id,
-             c.client_contract_id,
-             cons.first_name as consultant_first_name,
-             cons.last_name as consultant_last_name,
-             cons.company_name as consultant_company_name,
-             cons.company_address as consultant_company_address,
-             cons.company_vat as consultant_company_vat,
-             cons.iban as consultant_iban,
-             cons.swift as consultant_swift,
-             cli.first_name as client_first_name,
-             cli.last_name as client_last_name,
-             cli.company_name as client_company_name,
-             cli.company_address as client_company_address,
+      SELECT i.*, c.consultant_id, c.client_id, c.consultant_contract_id, c.client_contract_id,
+             cons.first_name as consultant_first_name, cons.last_name as consultant_last_name,
+             cons.company_name as consultant_company_name, cons.company_address as consultant_company_address,
+             cons.company_vat as consultant_company_vat, cons.iban as consultant_iban, cons.swift as consultant_swift,
+             cli.first_name as client_first_name, cli.last_name as client_last_name,
+             cli.company_name as client_company_name, cli.company_address as client_company_address,
              cli.company_vat as client_company_vat,
-             comp.name as company_name,
-             comp.address as company_address,
-             comp.company_vat as company_vat_number,
-             comp.representative_name,
-             comp.bank_name,
-             comp.bank_iban,
-             comp.bank_swift,
-             comp.bank_address
+             comp.name as company_name, comp.address as company_address, comp.company_vat as company_vat_number,
+             comp.representative_name, comp.bank_name, comp.bank_iban, comp.bank_swift, comp.bank_address
       FROM invoices i
       JOIN contracts c ON i.contract_id = c.id
       JOIN consultants cons ON c.consultant_id = cons.id
@@ -1991,83 +1988,52 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
 
     const invoice = invoiceResult.rows[0];
     
-    // Determine FROM and TO based on invoice type
     let fromInfo, toInfo;
     if (invoice.invoice_type === 'consultant') {
       fromInfo = {
         name: `${invoice.consultant_first_name} ${invoice.consultant_last_name}`,
-        company: invoice.consultant_company_name,
-        address: invoice.consultant_company_address,
-        vat: invoice.consultant_company_vat,
-        iban: invoice.consultant_iban,
-        swift: invoice.consultant_swift
+        company: invoice.consultant_company_name, address: invoice.consultant_company_address,
+        vat: invoice.consultant_company_vat, iban: invoice.consultant_iban, swift: invoice.consultant_swift
       };
       toInfo = {
-        name: invoice.representative_name,
-        company: invoice.company_name,
-        address: invoice.company_address,
-        vat: invoice.company_vat_number
+        name: invoice.representative_name, company: invoice.company_name,
+        address: invoice.company_address, vat: invoice.company_vat_number
       };
     } else {
       fromInfo = {
-        name: invoice.representative_name,
-        company: invoice.company_name,
-        address: invoice.company_address,
-        vat: invoice.company_vat_number,
-        iban: invoice.bank_iban,
-        swift: invoice.bank_swift
+        name: invoice.representative_name, company: invoice.company_name,
+        address: invoice.company_address, vat: invoice.company_vat_number,
+        iban: invoice.bank_iban, swift: invoice.bank_swift
       };
       toInfo = {
         name: `${invoice.client_first_name} ${invoice.client_last_name}`,
-        company: invoice.client_company_name,
-        address: invoice.client_company_address,
+        company: invoice.client_company_name, address: invoice.client_company_address,
         vat: invoice.client_company_vat
       };
     }
 
-    // Create PDF
     const doc = new PDFDocument({ margin: 50, size: 'A4' });
     const chunks = [];
     
     doc.on('data', chunk => chunks.push(chunk));
     doc.on('end', async () => {
       const pdfBuffer = Buffer.concat(chunks);
-      
       const bucketName = invoice.invoice_type === 'consultant' ? 'consultant-invoices' : 'client-invoices';
       const fileName = `${invoice.invoice_number.replace(/\//g, '-')}.pdf`;
       
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from(bucketName)
-        .upload(fileName, pdfBuffer, {
-          contentType: 'application/pdf',
-          upsert: true
-        });
+      const { error: uploadError } = await supabase.storage.from(bucketName).upload(fileName, pdfBuffer, { contentType: 'application/pdf', upsert: true });
+      if (uploadError) return res.status(500).json({ error: 'Failed to upload PDF' });
 
-      if (uploadError) {
-        console.error('Upload error:', uploadError);
-        return res.status(500).json({ error: 'Failed to upload PDF' });
-      }
-
-      const { data: urlData } = supabase.storage
-        .from(bucketName)
-        .getPublicUrl(fileName);
-
+      const { data: urlData } = supabase.storage.from(bucketName).getPublicUrl(fileName);
       const pdfUrl = urlData.publicUrl;
-
-      await pool.query(
-        'UPDATE invoices SET pdf_url = $1, updated_at = NOW() WHERE id = $2',
-        [pdfUrl, id]
-      );
-
+      await pool.query('UPDATE invoices SET pdf_url = $1, updated_at = NOW() WHERE id = $2', [pdfUrl, id]);
       res.json({ message: 'PDF generated successfully', pdfUrl });
     });
 
-    // Build PDF content
     const pageWidth = doc.page.width;
     const margin = 50;
     
     doc.fontSize(20).font('Helvetica-Bold').text(fromInfo.company, margin, 50);
-
     const leftCol = margin;
     const rightCol = pageWidth / 2 + 20;
     let yPos = 100;
@@ -2079,10 +2045,9 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     yPos += 15;
     doc.text(toInfo.company, leftCol, yPos, { width: 220 });
     yPos += 15;
-    const toAddressLines = doc.heightOfString(toInfo.address, { width: 220 });
-    doc.text(toInfo.address, leftCol, yPos, { width: 220 });
-    yPos += toAddressLines + 5;
-    doc.text(`VAT: ${toInfo.vat}`, leftCol, yPos);
+    doc.text(toInfo.address || '', leftCol, yPos, { width: 220 });
+    yPos += 20;
+    doc.text(`VAT: ${toInfo.vat || 'N/A'}`, leftCol, yPos);
 
     let fromYPos = 100;
     doc.fontSize(12).font('Helvetica-Bold').text('FROM:', rightCol, fromYPos);
@@ -2090,35 +2055,17 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     doc.fontSize(10).font('Helvetica');
     doc.text(fromInfo.company, rightCol, fromYPos, { width: 220 });
     fromYPos += 15;
-    const fromAddressLines = doc.heightOfString(fromInfo.address, { width: 220 });
-    doc.text(fromInfo.address, rightCol, fromYPos, { width: 220 });
-    fromYPos += fromAddressLines + 5;
-    doc.text(`VAT: ${fromInfo.vat}`, rightCol, fromYPos);
-    fromYPos += 15;
+    doc.text(fromInfo.address || '', rightCol, fromYPos, { width: 220 });
+    fromYPos += 20;
+    doc.text(`VAT: ${fromInfo.vat || 'N/A'}`, rightCol, fromYPos);
 
-    doc.fontSize(16).font('Helvetica-Bold')
-       .text(`INVOICE No. ${invoice.invoice_number}`, margin, 240, { 
-         align: 'center',
-         width: pageWidth - (margin * 2)
-       });
+    doc.fontSize(16).font('Helvetica-Bold').text(`INVOICE No. ${invoice.invoice_number}`, margin, 240, { align: 'center', width: pageWidth - (margin * 2) });
     
-    const invoiceDate = new Date(invoice.period_to).toLocaleDateString('en-GB', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric'
-    });
-    doc.fontSize(12).font('Helvetica')
-       .text(`Date: ${invoiceDate}`, margin, 265, { 
-         align: 'center',
-         width: pageWidth - (margin * 2)
-       });
+    const invoiceDate = new Date(invoice.period_to).toLocaleDateString('en-GB');
+    doc.fontSize(12).font('Helvetica').text(`Date: ${invoiceDate}`, margin, 265, { align: 'center', width: pageWidth - (margin * 2) });
 
     const tableTop = 310;
-    const col1 = margin;
-    const col2 = margin + 50;
-    const col3 = margin + 250;
-    const col4 = margin + 330;
-    const col5 = margin + 410;
+    const col1 = margin, col2 = margin + 50, col3 = margin + 250, col4 = margin + 330, col5 = margin + 410;
 
     doc.fontSize(10).font('Helvetica-Bold');
     doc.text('No.', col1, tableTop);
@@ -2126,20 +2073,15 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     doc.text('Days', col3, tableTop, { width: 60, align: 'right' });
     doc.text('Unit price', col4, tableTop, { width: 70, align: 'right' });
     doc.text('Total', col5, tableTop, { width: 70, align: 'right' });
-    
-    doc.moveTo(margin, tableTop + 15)
-       .lineTo(pageWidth - margin, tableTop + 15)
-       .stroke();
+    doc.moveTo(margin, tableTop + 15).lineTo(pageWidth - margin, tableTop + 15).stroke();
 
     const rowTop = tableTop + 25;
     doc.fontSize(9).font('Helvetica');
     doc.text('1', col1, rowTop);
-    
     const periodMonth = new Date(invoice.period_to).toLocaleDateString('en-US', { month: 'long' });
 
     if (invoice.invoice_type === 'client') {
-      const consultantName = `${invoice.consultant_first_name} ${invoice.consultant_last_name}`;
-      doc.text(`IT Services/${consultantName} - ${periodMonth}`, col2, rowTop, { width: 230 });
+      doc.text(`IT Services/${invoice.consultant_first_name} ${invoice.consultant_last_name} - ${periodMonth}`, col2, rowTop, { width: 230 });
       doc.text(`Contract: ${invoice.client_contract_id || 'N/A'}`, col2, rowTop + 12, { width: 230, fontSize: 8 });
     } else {
       doc.text(`IT Services - ${periodMonth}`, col2, rowTop, { width: 230 });
@@ -2157,10 +2099,7 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       summaryTop += 25;
     }
 
-    doc.moveTo(col4, summaryTop - 5)
-       .lineTo(pageWidth - margin, summaryTop - 5)
-       .stroke();
-    
+    doc.moveTo(col4, summaryTop - 5).lineTo(pageWidth - margin, summaryTop - 5).stroke();
     summaryTop += 10;
     doc.fontSize(11).font('Helvetica-Bold');
     doc.text('Total amount:', col4, summaryTop, { width: 70, align: 'right' });
@@ -2169,9 +2108,8 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     const bankTop = summaryTop + 60;
     doc.fontSize(10).font('Helvetica-Bold').text('Please pay to:', margin, bankTop);
     doc.fontSize(9).font('Helvetica');
-    doc.text(`Bank: ${fromInfo.iban ? (invoice.invoice_type === 'consultant' ? 'N/A' : invoice.bank_name || 'N/A') : 'N/A'}`, margin, bankTop + 20);
-    doc.text(`IBAN: ${fromInfo.iban || 'N/A'}`, margin, bankTop + 35);
-    doc.text(`SWIFT: ${fromInfo.swift || 'N/A'}`, margin, bankTop + 50);
+    doc.text(`IBAN: ${fromInfo.iban || 'N/A'}`, margin, bankTop + 20);
+    doc.text(`SWIFT: ${fromInfo.swift || 'N/A'}`, margin, bankTop + 35);
 
     doc.end();
   } catch (error) {
@@ -2186,27 +2124,10 @@ app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, 
     const { id } = req.params;
     
     const invoiceResult = await pool.query(`
-      SELECT i.*,
-             c.consultant_id, c.client_id,
-             cons.first_name as consultant_first_name,
-             cons.last_name as consultant_last_name,
-             cons.company_name as consultant_company_name,
-             cons.email as consultant_email,
-             cli.first_name as client_first_name,
-             cli.last_name as client_last_name,
-             cli.company_name as client_company_name,
-             cli.email as client_email,
-             comp.name as company_name,
-             comp.address as company_address,
-             comp.company_email,
-             comp.representative_name,
-             comp.smtp_host,
-             comp.smtp_port,
-             comp.smtp_username,
-             comp.smtp_password,
-             comp.smtp_from_email,
-             comp.smtp_from_name,
-             comp.smtp_secure
+      SELECT i.*, cons.email as consultant_email, cons.first_name as consultant_first_name, cons.last_name as consultant_last_name,
+             cli.email as client_email, cli.first_name as client_first_name, cli.last_name as client_last_name,
+             comp.name as company_name, comp.smtp_host, comp.smtp_port, comp.smtp_username, comp.smtp_password,
+             comp.smtp_from_email, comp.smtp_from_name, comp.smtp_secure, comp.address, comp.company_email, comp.representative_name
       FROM invoices i
       JOIN contracts c ON i.contract_id = c.id
       JOIN consultants cons ON c.consultant_id = cons.id
@@ -2215,15 +2136,10 @@ app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, 
       WHERE i.id = $1 AND i.company_id = $2
     `, [id, req.companyId]);
 
-    if (invoiceResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Invoice not found' });
-    }
+    if (invoiceResult.rows.length === 0) return res.status(404).json({ error: 'Invoice not found' });
 
     const invoice = invoiceResult.rows[0];
-    
-    if (!invoice.pdf_url) {
-      return res.status(400).json({ error: 'Please generate PDF before sending email' });
-    }
+    if (!invoice.pdf_url) return res.status(400).json({ error: 'Please generate PDF before sending email' });
     
     let recipientEmail, recipientName;
     if (invoice.invoice_type === 'consultant') {
@@ -2234,50 +2150,30 @@ app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, 
       recipientName = `${invoice.client_first_name} ${invoice.client_last_name}`;
     }
     
-    if (!recipientEmail) {
-      return res.status(400).json({ error: 'Recipient email not found' });
-    }
+    if (!recipientEmail) return res.status(400).json({ error: 'Recipient email not found' });
     
     await sendInvoiceEmail(invoice, invoice, recipientEmail, recipientName);
     
     await pool.query(
-      `UPDATE invoices 
-       SET email_sent = true, 
-           email_sent_at = NOW(), 
-           email_sent_to = $1,
-           status = CASE WHEN status = 'draft' THEN 'sent' ELSE status END,
-           updated_at = NOW()
-       WHERE id = $2`,
+      `UPDATE invoices SET email_sent = true, email_sent_at = NOW(), email_sent_to = $1,
+       status = CASE WHEN status = 'draft' THEN 'sent' ELSE status END, updated_at = NOW() WHERE id = $2`,
       [recipientEmail, id]
     );
     
-    res.json({ 
-      message: 'Email sent successfully',
-      recipient: recipientEmail
-    });
-    
+    res.json({ message: 'Email sent successfully', recipient: recipientEmail });
   } catch (error) {
     console.error('Send email error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ============================================
-// USER MANAGEMENT ENDPOINTS (Admin Only)
-// ============================================
-
-// Get all users in company (Admin only) - UPDATED TO INCLUDE PERMISSIONS
+// User Management Routes
 app.get('/api/users', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT u.id, u.email, u.first_name, u.last_name, u.role, u.permissions, u.active, u.created_at, u.last_login,
-             creator.first_name as created_by_first_name, creator.last_name as created_by_last_name
-      FROM users u
-      LEFT JOIN users creator ON u.created_by = creator.id
-      WHERE u.company_id = $1
-      ORDER BY u.created_at DESC
+      SELECT u.id, u.email, u.first_name, u.last_name, u.role, u.permissions, u.active, u.created_at, u.last_login
+      FROM users u WHERE u.company_id = $1 ORDER BY u.created_at DESC
     `, [req.companyId]);
-    
     res.json(result.rows);
   } catch (error) {
     console.error('Get users error:', error);
@@ -2285,211 +2181,109 @@ app.get('/api/users', authenticateToken, requireAdmin, checkCompanyAccess, async
   }
 });
 
-// Create user account (Admin only) - UPDATED TO SUPPORT ADMIN/OPERATOR + PERMISSIONS
 app.post('/api/users', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
     const { email, password, firstName, lastName, role, permissions } = req.body;
-
     if (!email || !password || !firstName || !lastName) {
       return res.status(400).json({ error: 'Email, password, first name, and last name are required' });
     }
 
-    // Validate role
     const userRole = role || 'operator';
     if (!['admin', 'operator'].includes(userRole)) {
-      return res.status(400).json({ error: 'Invalid role. Must be admin or operator' });
+      return res.status(400).json({ error: 'Invalid role' });
     }
 
-    // Check if email already exists
     const existingUser = await pool.query('SELECT * FROM users WHERE email = $1', [email.toLowerCase()]);
-    if (existingUser.rows.length > 0) {
-      return res.status(400).json({ error: 'Email already exists' });
-    }
+    if (existingUser.rows.length > 0) return res.status(400).json({ error: 'Email already exists' });
 
-    // Hash password
-    const saltRounds = 12;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
+    const hashedPassword = await bcrypt.hash(password, 12);
+    const userPermissions = userRole === 'admin' ? DEFAULT_PERMISSIONS.admin : (permissions || DEFAULT_PERMISSIONS.operator);
 
-    // Use provided permissions or defaults based on role
-    // If creating admin, force all permissions
-    const userPermissions = userRole === 'admin' 
-      ? DEFAULT_PERMISSIONS.admin 
-      : (permissions || DEFAULT_PERMISSIONS.operator);
-
-    // Create user
     const result = await pool.query(`
-      INSERT INTO users 
-      (email, password_hash, first_name, last_name, company_id, role, permissions, active, created_by, created_at)
+      INSERT INTO users (email, password_hash, first_name, last_name, company_id, role, permissions, active, created_by, created_at)
       VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8, NOW())
       RETURNING id, email, first_name, last_name, role, permissions, active, created_at
     `, [email.toLowerCase(), hashedPassword, firstName, lastName, req.companyId, userRole, JSON.stringify(userPermissions), req.user.id]);
 
-    console.log('✅ User created:', email, 'role:', userRole);
-    
-    res.status(201).json({
-      message: `${userRole === 'admin' ? 'Admin' : 'Operator'} created successfully`,
-      user: result.rows[0]
-    });
+    res.status(201).json({ message: 'User created successfully', user: result.rows[0] });
   } catch (error) {
     console.error('Create user error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// UPDATE user (Admin only) - NEW ENDPOINT
 app.put('/api/users/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
     const { email, firstName, lastName, role, permissions, password } = req.body;
 
-    // Verify user belongs to same company
-    const targetUser = await pool.query(
-      'SELECT * FROM users WHERE id = $1 AND company_id = $2',
-      [id, req.companyId]
-    );
-    
-    if (targetUser.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
+    const targetUser = await pool.query('SELECT * FROM users WHERE id = $1 AND company_id = $2', [id, req.companyId]);
+    if (targetUser.rows.length === 0) return res.status(404).json({ error: 'User not found' });
 
-    // Prevent changing your own role
     if (parseInt(id) === req.user.id && role && role !== targetUser.rows[0].role) {
       return res.status(400).json({ error: 'You cannot change your own role' });
     }
 
-    // Validate role if provided
-    if (role && !['admin', 'operator'].includes(role)) {
-      return res.status(400).json({ error: 'Invalid role. Must be admin or operator' });
-    }
-
-    // If changing to admin, force all permissions
     let finalPermissions = permissions;
-    if (role === 'admin') {
-      finalPermissions = DEFAULT_PERMISSIONS.admin;
-    }
+    if (role === 'admin') finalPermissions = DEFAULT_PERMISSIONS.admin;
 
-    // Build update query dynamically
-    let updateFields = [];
-    let values = [];
-    let valueIndex = 1;
+    let updateFields = [], values = [], valueIndex = 1;
 
-    if (email) {
-      updateFields.push(`email = $${valueIndex++}`);
-      values.push(email.toLowerCase());
-    }
-    if (firstName) {
-      updateFields.push(`first_name = $${valueIndex++}`);
-      values.push(firstName);
-    }
-    if (lastName) {
-      updateFields.push(`last_name = $${valueIndex++}`);
-      values.push(lastName);
-    }
-    if (role) {
-      updateFields.push(`role = $${valueIndex++}`);
-      values.push(role);
-    }
-    if (finalPermissions) {
-      updateFields.push(`permissions = $${valueIndex++}`);
-      values.push(JSON.stringify(finalPermissions));
-    }
+    if (email) { updateFields.push(`email = $${valueIndex++}`); values.push(email.toLowerCase()); }
+    if (firstName) { updateFields.push(`first_name = $${valueIndex++}`); values.push(firstName); }
+    if (lastName) { updateFields.push(`last_name = $${valueIndex++}`); values.push(lastName); }
+    if (role) { updateFields.push(`role = $${valueIndex++}`); values.push(role); }
+    if (finalPermissions) { updateFields.push(`permissions = $${valueIndex++}`); values.push(JSON.stringify(finalPermissions)); }
     if (password) {
       const hashedPassword = await bcrypt.hash(password, 12);
       updateFields.push(`password_hash = $${valueIndex++}`);
       values.push(hashedPassword);
     }
 
-    if (updateFields.length === 0) {
-      return res.status(400).json({ error: 'No fields to update' });
-    }
+    if (updateFields.length === 0) return res.status(400).json({ error: 'No fields to update' });
 
     updateFields.push(`updated_at = NOW()`);
     values.push(id);
     values.push(req.companyId);
 
     const result = await pool.query(
-      `UPDATE users 
-       SET ${updateFields.join(', ')}
-       WHERE id = $${valueIndex++} AND company_id = $${valueIndex}
-       RETURNING id, email, first_name, last_name, role, permissions, active, created_at`,
+      `UPDATE users SET ${updateFields.join(', ')} WHERE id = $${valueIndex++} AND company_id = $${valueIndex} RETURNING *`,
       values
     );
 
-    console.log('✅ User updated:', id);
     res.json({ message: 'User updated successfully', user: result.rows[0] });
   } catch (error) {
     console.error('Update user error:', error);
-    if (error.code === '23505') {
-      res.status(400).json({ error: 'Email already exists' });
-    } else {
-      res.status(500).json({ error: error.message });
-    }
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Toggle user active status (Admin only)
 app.put('/api/users/:id/toggle-active', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
+    const userCheck = await pool.query('SELECT * FROM users WHERE id = $1 AND company_id = $2', [id, req.companyId]);
+    if (userCheck.rows.length === 0) return res.status(404).json({ error: 'User not found' });
 
-    // Check user belongs to same company
-    const userCheck = await pool.query(
-      'SELECT * FROM users WHERE id = $1 AND company_id = $2',
-      [id, req.companyId]
-    );
-
-    if (userCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const user = userCheck.rows[0];
-
-    // Prevent admin from disabling themselves
-    if (user.id === req.user.id) {
+    if (userCheck.rows[0].id === req.user.id) {
       return res.status(400).json({ error: 'You cannot disable your own account' });
     }
 
-    // Toggle active status
-    const result = await pool.query(
-      'UPDATE users SET active = NOT active, updated_at = NOW() WHERE id = $1 RETURNING *',
-      [id]
-    );
-
-    res.json({
-      message: `User ${result.rows[0].active ? 'enabled' : 'disabled'} successfully`,
-      user: result.rows[0]
-    });
+    const result = await pool.query('UPDATE users SET active = NOT active, updated_at = NOW() WHERE id = $1 RETURNING *', [id]);
+    res.json({ message: `User ${result.rows[0].active ? 'enabled' : 'disabled'} successfully`, user: result.rows[0] });
   } catch (error) {
     console.error('Toggle user active error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// Delete user (Admin only)
 app.delete('/api/users/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
+    const userCheck = await pool.query('SELECT * FROM users WHERE id = $1 AND company_id = $2', [id, req.companyId]);
+    if (userCheck.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    if (userCheck.rows[0].id === req.user.id) return res.status(400).json({ error: 'You cannot delete your own account' });
 
-    // Check user belongs to same company
-    const userCheck = await pool.query(
-      'SELECT * FROM users WHERE id = $1 AND company_id = $2',
-      [id, req.companyId]
-    );
-
-    if (userCheck.rows.length === 0) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const user = userCheck.rows[0];
-
-    // Prevent admin from deleting themselves
-    if (user.id === req.user.id) {
-      return res.status(400).json({ error: 'You cannot delete your own account' });
-    }
-
-    // Delete user
     await pool.query('DELETE FROM users WHERE id = $1', [id]);
-
     res.json({ message: 'User deleted successfully' });
   } catch (error) {
     console.error('Delete user error:', error);
@@ -2497,34 +2291,19 @@ app.delete('/api/users/:id', authenticateToken, requireAdmin, checkCompanyAccess
   }
 });
 
-// Change password (Both roles)
 app.put('/api/auth/change-password', authenticateToken, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
+    if (!currentPassword || !newPassword) return res.status(400).json({ error: 'Current and new passwords are required' });
 
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({ error: 'Current and new passwords are required' });
-    }
-
-    // Get user
     const result = await pool.query('SELECT * FROM users WHERE id = $1', [req.user.id]);
     const user = result.rows[0];
 
-    // Verify current password
     const isValid = await bcrypt.compare(currentPassword, user.password_hash);
-    if (!isValid) {
-      return res.status(401).json({ error: 'Current password is incorrect' });
-    }
+    if (!isValid) return res.status(401).json({ error: 'Current password is incorrect' });
 
-    // Hash new password
-    const saltRounds = 12;
-    const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
-
-    // Update password
-    await pool.query(
-      'UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2',
-      [hashedPassword, req.user.id]
-    );
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    await pool.query('UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2', [hashedPassword, req.user.id]);
 
     res.json({ message: 'Password changed successfully' });
   } catch (error) {
@@ -2543,7 +2322,6 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Invoice Generator API running on port ${PORT}`);
   console.log(`📊 Health check: http://localhost:${PORT}/health`);
-  console.log(`🔗 Environment: ${process.env.NODE_ENV || 'development'}`);
 });
 
 module.exports = app;
