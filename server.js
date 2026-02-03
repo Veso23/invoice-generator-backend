@@ -450,8 +450,7 @@ app.post('/api/consultants', authenticateToken, checkCompanyAccess, async (req, 
     const duplicateErrors = await checkDuplicates(pool, 'consultants', [
       { field: 'company_vat', value: companyVat, label: 'Company VAT' },
       { field: 'email', value: email, label: 'Email' },
-      { field: 'iban', value: iban, label: 'IBAN' },
-      { field: 'phone', value: phone, label: 'Phone' }
+      { field: 'iban', value: iban, label: 'IBAN' }
     ], null, req.companyId);  // ✅ Pass companyId for scoped duplicate check
 
     if (duplicateErrors.length > 0) {
@@ -505,8 +504,7 @@ app.put('/api/consultants/:id', authenticateToken, checkCompanyAccess, async (re
     const duplicateErrors = await checkDuplicates(pool, 'consultants', [
       { field: 'company_vat', value: companyVat, label: 'Company VAT' },
       { field: 'email', value: email, label: 'Email' },
-      { field: 'iban', value: iban, label: 'IBAN' },
-      { field: 'phone', value: phone, label: 'Phone' }
+      { field: 'iban', value: iban, label: 'IBAN' }
     ], id, req.companyId);  // ✅ Pass both excludeId and companyId
 
     if (duplicateErrors.length > 0) {
@@ -603,8 +601,7 @@ app.post('/api/clients', authenticateToken, checkCompanyAccess, async (req, res)
     const duplicateErrors = await checkDuplicates(pool, 'clients', [
       { field: 'company_vat', value: companyVat, label: 'Company VAT' },
       { field: 'email', value: email, label: 'Email' },
-      { field: 'iban', value: iban, label: 'IBAN' },
-      { field: 'phone', value: phone, label: 'Phone' }
+      { field: 'iban', value: iban, label: 'IBAN' }
     ], null, req.companyId);  // ✅ Pass companyId
 
     if (duplicateErrors.length > 0) {
@@ -657,8 +654,7 @@ app.put('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req, r
     const duplicateErrors = await checkDuplicates(pool, 'clients', [
       { field: 'company_vat', value: companyVat, label: 'Company VAT' },
       { field: 'email', value: email, label: 'Email' },
-      { field: 'iban', value: iban, label: 'IBAN' },
-      { field: 'phone', value: phone, label: 'Phone' }
+      { field: 'iban', value: iban, label: 'IBAN' }
     ], id, req.companyId);  // ✅ Pass both excludeId and companyId
 
     if (duplicateErrors.length > 0) {
@@ -738,8 +734,7 @@ app.post('/api/consultants/bulk', authenticateToken, checkCompanyAccess, async (
       const duplicateErrors = await checkDuplicates(pool, 'consultants', [
         { field: 'company_vat', value: consultant.companyVat, label: 'Company VAT' },
         { field: 'email', value: consultant.email, label: 'Email' },
-        { field: 'iban', value: consultant.iban, label: 'IBAN' },
-        { field: 'phone', value: consultant.phone, label: 'Phone' }
+        { field: 'iban', value: consultant.iban, label: 'IBAN' }
       ], null, req.companyId);  // ✅ Pass companyId
 
       if (duplicateErrors.length > 0) {
