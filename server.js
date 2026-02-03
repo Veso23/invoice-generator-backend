@@ -477,7 +477,7 @@ app.post('/api/consultants', authenticateToken, checkCompanyAccess, async (req, 
       });
     }
     console.error('Error adding consultant:', error);
-    res.status(500).json({ error: 'Failed to add consultant' });
+    res.status(500).json({ error: `Failed to add consultant: ${error.message}` });
   }
 });
 
@@ -627,7 +627,8 @@ app.post('/api/clients', authenticateToken, checkCompanyAccess, async (req, res)
       });
     }
     console.error('Error adding client:', error);
-    res.status(500).json({ error: 'Failed to add client' });
+    // Return actual error message for debugging
+    res.status(500).json({ error: `Failed to add client: ${error.message}` });
   }
 });
 
