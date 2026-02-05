@@ -836,7 +836,7 @@ app.get('/api/timesheets', authenticateToken, checkCompanyAccess, async (req, re
              CASE WHEN c.id IS NOT NULL THEN true ELSE false END as consultant_matched
       FROM automation_logs al
       LEFT JOIN consultants c ON al.sender_email = c.email AND c.company_id = $1
-      WHERE al.processed = false
+      WHERE al.processed = false AND al.company_id = $1
       ORDER BY al.created_at DESC
     `, [req.companyId]);
 
@@ -1522,10 +1522,9 @@ app.get('/api/timesheets/history', authenticateToken, checkCompanyAccess, async 
         cli.status as client_invoice_status
       FROM automation_logs al
       LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email)) AND c.company_id = $1
-      LEFT JOIN invoices ci ON ci.timesheet_id = al.id AND ci.invoice_type = 'consultant'
-      LEFT JOIN invoices cli ON cli.timesheet_id = al.id AND cli.invoice_type = 'client'
-      WHERE al.company_id = $1 
-         OR (al.company_id IS NULL AND c.company_id = $1)
+      LEFT JOIN invoices ci ON ci.timesheet_id = al.id AND ci.invoice_type = 'consultant' AND ci.company_id = $1
+      LEFT JOIN invoices cli ON cli.timesheet_id = al.id AND cli.invoice_type = 'client' AND cli.company_id = $1
+      WHERE al.company_id = $1
       ORDER BY al.id, al.created_at DESC
     `, [req.companyId]);
 
@@ -1572,15 +1571,17 @@ app.post('/api/n8n/automation-data', async (req, res) => {
       timestamp, senderEmail, recipientEmail, personName, month,
       emailHours, emailDays, pdfHours, pdfDays,
       hoursDiff, daysDiff, hoursStatus, daysStatus, status,
-      timesheetFileUrl
+      timesheetFileUrl, companyId: directCompanyId  // ✅ Accept companyId directly from N8N
     } = req.body;
 
-    // ✅ Find company by recipient email
-    let companyId = null;
-    if (recipientEmail) {
+    // ✅ Priority 1: Use companyId directly from N8N payload (most reliable)
+    let companyId = directCompanyId || null;
+    
+    // ✅ Priority 2: Find company by recipient email (timesheet_email setting)
+    if (!companyId && recipientEmail) {
       const companyResult = await pool.query(
-        'SELECT id FROM companies WHERE timesheet_email = $1',
-        [recipientEmail.toLowerCase()]
+        'SELECT id FROM companies WHERE LOWER(timesheet_email) = LOWER($1)',
+        [recipientEmail.trim()]
       );
       
       if (companyResult.rows.length > 0) {
@@ -1590,15 +1591,26 @@ app.post('/api/n8n/automation-data', async (req, res) => {
       }
     }
     
-    // Fallback: match by sender email if recipient didn't match
+    // ✅ Priority 3: Fallback - match by sender email to consultant
+    // Note: This may be ambiguous if consultant exists in multiple companies
     if (!companyId && senderEmail) {
       const consultantResult = await pool.query(
-        'SELECT company_id FROM consultants WHERE email = $1 LIMIT 1',
-        [senderEmail]
+        'SELECT company_id FROM consultants WHERE LOWER(email) = LOWER($1) LIMIT 1',
+        [senderEmail.trim()]
       );
       if (consultantResult.rows.length > 0) {
         companyId = consultantResult.rows[0].company_id;
       }
+    }
+    
+    // ✅ Reject if no company could be determined
+    if (!companyId) {
+      console.error(`Could not determine company for timesheet from: ${senderEmail}`);
+      return res.status(400).json({ 
+        error: 'Could not determine company. Please include companyId in the payload.',
+        senderEmail,
+        recipientEmail
+      });
     }
 
     const result = await pool.query(`
