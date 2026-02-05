@@ -1165,10 +1165,29 @@ const contractResult = await pool.query(`
     const fromDate = new Date(contract.from_date);
     const toDate = new Date(contract.to_date);
     const days = Math.ceil((toDate - fromDate) / (1000 * 60 * 60 * 24)) + 1;
+    const year = new Date().getFullYear();
 
-    // Generate invoice numbers using the database function
-    const consultantInvoiceNumber = `INV-CONS-${Date.now()}`;
-    const clientInvoiceNumber = `INV-CLI-${Date.now()}`;
+    // ✅ Generate invoice numbers with SEPARATE sequences
+    // Get consultant initials
+    const consultantInitials = (contract.consultant_first_name.charAt(0) + contract.consultant_last_name.charAt(0)).toUpperCase();
+    
+    // Count CLIENT invoices only (one sequence for all client invoices)
+    const clientInvoiceCountResult = await pool.query(
+      `SELECT COUNT(*) FROM invoices WHERE company_id = $1 AND invoice_type = 'client'`,
+      [req.companyId]
+    );
+    const clientInvoiceCount = parseInt(clientInvoiceCountResult.rows[0].count);
+    const clientInvoiceNumber = `INV-${year}-${String(clientInvoiceCount + 1).padStart(4, '0')}`;
+    
+    // Count CONSULTANT invoices for THIS consultant only (separate sequence per consultant)
+    const consultantInvoiceCountResult = await pool.query(
+      `SELECT COUNT(*) FROM invoices i
+       JOIN contracts c ON i.contract_id = c.id
+       WHERE i.company_id = $1 AND i.invoice_type = 'consultant' AND c.consultant_id = $2`,
+      [req.companyId, contract.consultant_id]
+    );
+    const consultantInvoiceCount = parseInt(consultantInvoiceCountResult.rows[0].count);
+    const consultantInvoiceNumber = `INV-${year}-${String(consultantInvoiceCount + 1).padStart(4, '0')}-${consultantInitials}`;
 
 // Calculate amounts using company's default VAT rate
 const vatRate = contract.default_vat_rate || 21.00;  // ← ADD THIS
@@ -1347,21 +1366,33 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     
     console.log(`Found contract: ${contract.contract_number} (${contract.from_date} to ${contract.to_date})`);
     
-    // ✅ Generate invoice number with locking to prevent race condition
+    // ✅ Generate invoice numbers with SEPARATE sequences
     // Lock the invoices table for this company to prevent race conditions
-await client.query(
-  'SELECT id FROM invoices WHERE company_id = $1 FOR UPDATE',
-  [req.companyId]
-);
+    await client.query(
+      'SELECT id FROM invoices WHERE company_id = $1 FOR UPDATE',
+      [req.companyId]
+    );
 
-// Now get the count
-const invoiceCountResult = await client.query(
-  'SELECT COUNT(*) FROM invoices WHERE company_id = $1',
-  [req.companyId]
-);
+    // Get consultant initials for consultant invoice numbering
+    const consultantInitials = (consultant.first_name.charAt(0) + consultant.last_name.charAt(0)).toUpperCase();
     
-    const invoiceCount = parseInt(invoiceCountResult.rows[0].count);
-    const invoiceNumber = `INV-${year}-${String(invoiceCount + 1).padStart(4, '0')}`;
+    // Count CLIENT invoices only (one sequence for all client invoices)
+    const clientInvoiceCountResult = await client.query(
+      `SELECT COUNT(*) FROM invoices WHERE company_id = $1 AND invoice_type = 'client'`,
+      [req.companyId]
+    );
+    const clientInvoiceCount = parseInt(clientInvoiceCountResult.rows[0].count);
+    const clientInvoiceNumber = `INV-${year}-${String(clientInvoiceCount + 1).padStart(4, '0')}`;
+    
+    // Count CONSULTANT invoices for THIS consultant only (separate sequence per consultant)
+    const consultantInvoiceCountResult = await client.query(
+      `SELECT COUNT(*) FROM invoices i
+       JOIN contracts c ON i.contract_id = c.id
+       WHERE i.company_id = $1 AND i.invoice_type = 'consultant' AND c.consultant_id = $2`,
+      [req.companyId, consultant.id]
+    );
+    const consultantInvoiceCount = parseInt(consultantInvoiceCountResult.rows[0].count);
+    const consultantInvoiceNumber = `INV-${year}-${String(consultantInvoiceCount + 1).padStart(4, '0')}-${consultantInitials}`;
     
     // CALCULATE CONSULTANT INVOICE
     const consultantDailyRate = parseFloat(contract.purchase_price);
@@ -1396,7 +1427,7 @@ const invoiceCountResult = await client.query(
       [
         req.companyId,
         contract.id,
-        `${invoiceNumber}-C`,
+        consultantInvoiceNumber,
         periodFrom,
         periodTo,
         daysWorked,
@@ -1445,7 +1476,7 @@ const invoiceCountResult = await client.query(
       [
         req.companyId,
         contract.id,
-        `${invoiceNumber}-CL`,
+        clientInvoiceNumber,
         periodFrom,
         periodTo,
         daysWorked,
