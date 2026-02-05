@@ -1168,8 +1168,9 @@ const contractResult = await pool.query(`
     const year = new Date().getFullYear();
 
     // ✅ Generate invoice numbers with SEPARATE sequences
-    // Get consultant initials
-    const consultantInitials = (contract.consultant_first_name.charAt(0) + contract.consultant_last_name.charAt(0)).toUpperCase();
+    // Get consultant full name for invoice numbering (remove spaces and special chars)
+    const consultantFullName = (contract.consultant_first_name + contract.consultant_last_name)
+      .replace(/[^a-zA-Z0-9]/g, '');
     
     // Count CLIENT invoices only (one sequence for all client invoices)
     const clientInvoiceCountResult = await pool.query(
@@ -1187,7 +1188,7 @@ const contractResult = await pool.query(`
       [req.companyId, contract.consultant_id]
     );
     const consultantInvoiceCount = parseInt(consultantInvoiceCountResult.rows[0].count);
-    const consultantInvoiceNumber = `INV-${year}-${String(consultantInvoiceCount + 1).padStart(4, '0')}-${consultantInitials}`;
+    const consultantInvoiceNumber = `INV-${year}-${String(consultantInvoiceCount + 1).padStart(4, '0')}-${consultantFullName}`;
 
 // Calculate amounts using company's default VAT rate
 const vatRate = contract.default_vat_rate || 21.00;  // ← ADD THIS
@@ -1373,8 +1374,9 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       [req.companyId]
     );
 
-    // Get consultant initials for consultant invoice numbering
-    const consultantInitials = (consultant.first_name.charAt(0) + consultant.last_name.charAt(0)).toUpperCase();
+    // Get consultant full name for invoice numbering (remove spaces and special chars)
+    const consultantFullName = (consultant.first_name + consultant.last_name)
+      .replace(/[^a-zA-Z0-9]/g, '');
     
     // Count CLIENT invoices only (one sequence for all client invoices)
     const clientInvoiceCountResult = await client.query(
@@ -1392,7 +1394,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       [req.companyId, consultant.id]
     );
     const consultantInvoiceCount = parseInt(consultantInvoiceCountResult.rows[0].count);
-    const consultantInvoiceNumber = `INV-${year}-${String(consultantInvoiceCount + 1).padStart(4, '0')}-${consultantInitials}`;
+    const consultantInvoiceNumber = `INV-${year}-${String(consultantInvoiceCount + 1).padStart(4, '0')}-${consultantFullName}`;
     
     // CALCULATE CONSULTANT INVOICE
     const consultantDailyRate = parseFloat(contract.purchase_price);
