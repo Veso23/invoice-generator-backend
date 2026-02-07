@@ -2051,15 +2051,32 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
     const deadlineDate = new Date(checkingYear, checkingDate.getMonth(), deadlineDay);
     const isOverdue = now > deadlineDate;
     
-    const consultantsResult = await pool.query(
-      `SELECT DISTINCT c.id, c.first_name, c.last_name, c.company_name, c.email
-       FROM consultants c
-       INNER JOIN contracts ct ON c.id = ct.consultant_id
-       WHERE c.company_id = $1 AND ct.status = 'active'
-       ORDER BY c.last_name, c.first_name`,
-      [req.companyId]
+    // Calculate first and last day of the checking month
+    const firstDayOfMonth = new Date(checkingYear, checkingDate.getMonth(), 1);
+    const lastDayOfMonth = new Date(checkingYear, checkingDate.getMonth() + 1, 0);
+    const firstDayStr = firstDayOfMonth.toISOString().split('T')[0];
+    const lastDayStr = lastDayOfMonth.toISOString().split('T')[0];
+    
+    // ✅ NEW: Get all contracts that overlap with the checking month
+    // A contract overlaps if: from_date <= last day of month AND to_date >= first day of month
+    const contractsResult = await pool.query(
+      `SELECT c.id as contract_id, c.contract_number, c.from_date, c.to_date,
+              c.purchase_price, c.sell_price,
+              cons.id as consultant_id, cons.first_name, cons.last_name, 
+              cons.company_name as consultant_company, cons.email as consultant_email,
+              cli.id as client_id, cli.first_name as client_first_name, cli.last_name as client_last_name,
+              cli.company_name as client_company
+       FROM contracts c
+       JOIN consultants cons ON c.consultant_id = cons.id
+       JOIN clients cli ON c.client_id = cli.id
+       WHERE c.company_id = $1 
+         AND c.from_date <= $2 
+         AND c.to_date >= $3
+       ORDER BY cons.last_name, cons.first_name, c.from_date`,
+      [req.companyId, lastDayStr, firstDayStr]
     );
     
+    // Get all timesheets for this company
     const timesheetsResult = await pool.query(
       `SELECT al.* FROM automation_logs al WHERE al.company_id = $1
        UNION
@@ -2070,23 +2087,34 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
       [req.companyId]
     );
     
-    const consultants = consultantsResult.rows.map(consultant => {
-      const normalizedConsultantEmail = consultant.email?.trim().toLowerCase();
+    // Map contracts to their status
+    const contractStatuses = contractsResult.rows.map(contract => {
+      const normalizedConsultantEmail = contract.consultant_email?.trim().toLowerCase();
       
+      // Find timesheet for this contract (either by contract_id or by email + month)
       const timesheet = timesheetsResult.rows.find(ts => {
+        // First check if timesheet is directly assigned to this contract
+        if (ts.contract_id === contract.contract_id) {
+          return ts.month?.toLowerCase() === checkingMonth.toLowerCase();
+        }
+        
+        // Otherwise match by email + month (for unassigned timesheets)
         const normalizedSenderEmail = ts.sender_email?.trim().toLowerCase();
         if (normalizedSenderEmail !== normalizedConsultantEmail) return false;
+        if (ts.contract_id) return false; // Skip if already assigned to another contract
         if (ts.month) return ts.month.toLowerCase() === checkingMonth.toLowerCase();
+        
+        // Fallback: estimate month from created_at
         const createdDate = new Date(ts.created_at);
         const estimatedMonth = createdDate.toLocaleDateString('en-US', { month: 'long' });
         return estimatedMonth.toLowerCase() === checkingMonth.toLowerCase();
       });
       
+      // Check for invoiced timesheet
       const invoicedTimesheet = timesheetsResult.rows.find(ts => {
-        const normalizedSenderEmail = ts.sender_email?.trim().toLowerCase();
-        if (normalizedSenderEmail !== normalizedConsultantEmail) return false;
-        if (!ts.invoice_generated) return false;
-        if (ts.month) return ts.month.toLowerCase() === checkingMonth.toLowerCase();
+        if (ts.contract_id === contract.contract_id && ts.invoice_generated) {
+          return ts.month?.toLowerCase() === checkingMonth.toLowerCase();
+        }
         return false;
       });
       
@@ -2095,14 +2123,63 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
       else if (isOverdue) status = 'overdue';
       else status = 'waiting';
       
+      // Calculate contract period within the month
+      const contractStart = new Date(contract.from_date);
+      const contractEnd = new Date(contract.to_date);
+      const periodStart = contractStart > firstDayOfMonth ? contractStart : firstDayOfMonth;
+      const periodEnd = contractEnd < lastDayOfMonth ? contractEnd : lastDayOfMonth;
+      
+      return {
+        contract_id: contract.contract_id,
+        contract_number: contract.contract_number,
+        contract_from: contract.from_date,
+        contract_to: contract.to_date,
+        period_start: periodStart.toISOString().split('T')[0],
+        period_end: periodEnd.toISOString().split('T')[0],
+        consultant_id: contract.consultant_id,
+        consultant_name: `${contract.first_name} ${contract.last_name}`,
+        consultant_email: contract.consultant_email,
+        consultant_company: contract.consultant_company,
+        client_id: contract.client_id,
+        client_name: contract.client_company || `${contract.client_first_name} ${contract.client_last_name}`,
+        status,
+        checking_month: checkingMonth,
+        checking_year: checkingYear,
+        has_timesheet: !!(timesheet || invoicedTimesheet),
+        timesheet_id: timesheet?.id || invoicedTimesheet?.id || null,
+        timesheet_processed: (timesheet?.month || invoicedTimesheet?.month) ? true : false,
+        invoice_generated: invoicedTimesheet?.invoice_generated || timesheet?.invoice_generated || false
+      };
+    });
+    
+    // Also return legacy consultants array for backward compatibility
+    const uniqueConsultants = [...new Map(contractsResult.rows.map(c => [c.consultant_id, {
+      id: c.consultant_id,
+      first_name: c.first_name,
+      last_name: c.last_name,
+      company_name: c.consultant_company,
+      email: c.consultant_email
+    }])).values()];
+    
+    const consultants = uniqueConsultants.map(consultant => {
+      const consultantContracts = contractStatuses.filter(c => c.consultant_id === consultant.id);
+      const hasAnyTimesheet = consultantContracts.some(c => c.has_timesheet);
+      const allInvoiced = consultantContracts.every(c => c.invoice_generated);
+      
+      let status;
+      if (hasAnyTimesheet) status = 'received';
+      else if (isOverdue) status = 'overdue';
+      else status = 'waiting';
+      
       return {
         ...consultant,
         status,
         checking_month: checkingMonth,
         checking_year: checkingYear,
-        has_timesheet: !!(timesheet || invoicedTimesheet),
-        timesheet_processed: (timesheet?.month || invoicedTimesheet?.month) ? true : false,
-        invoice_generated: invoicedTimesheet?.invoice_generated || timesheet?.invoice_generated || false
+        has_timesheet: hasAnyTimesheet,
+        timesheet_processed: consultantContracts.some(c => c.timesheet_processed),
+        invoice_generated: allInvoiced,
+        expected_timesheets: consultantContracts.length // How many timesheets we expect
       };
     });
     
@@ -2112,7 +2189,8 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
       deadline_day: deadlineDay,
       deadline_date: deadlineDate.toISOString(),
       is_overdue: isOverdue,
-      consultants
+      contracts: contractStatuses, // NEW: contracts with their status
+      consultants // Legacy: for backward compatibility
     });
   } catch (error) {
     console.error('Timesheet status error:', error);
