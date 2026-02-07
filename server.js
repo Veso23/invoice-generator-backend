@@ -87,12 +87,15 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
     rejectUnauthorized: false
-  }
+  },
+  // Ensure UTF-8 encoding for Cyrillic and other characters
+  client_encoding: 'UTF8'
 });
 
-// Test database connection
-pool.on('connect', () => {
-  console.log('✅ Connected to Supabase database');
+// Set encoding on each new connection
+pool.on('connect', (client) => {
+  client.query('SET client_encoding = UTF8');
+  console.log('✅ Connected to Supabase database (UTF-8)');
 });
 
 pool.on('error', (err) => {
@@ -1017,6 +1020,156 @@ app.put('/api/timesheets/:id/match', authenticateToken, checkCompanyAccess, asyn
   }
 });
 
+// Get available contracts for a timesheet
+app.get('/api/timesheets/:id/available-contracts', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Get timesheet
+    const timesheetResult = await pool.query(
+      'SELECT * FROM automation_logs WHERE id = $1',
+      [id]
+    );
+    
+    if (timesheetResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Timesheet not found' });
+    }
+    
+    const timesheet = timesheetResult.rows[0];
+    
+    if (!timesheet.sender_email) {
+      return res.status(400).json({ error: 'Timesheet must be matched to a consultant first' });
+    }
+    
+    if (!timesheet.month) {
+      return res.status(400).json({ error: 'Timesheet month must be set first' });
+    }
+    
+    // Find consultant
+    const normalizedEmail = timesheet.sender_email.trim().toLowerCase();
+    const consultantResult = await pool.query(
+      `SELECT * FROM consultants WHERE LOWER(TRIM(email)) = $1 AND company_id = $2`,
+      [normalizedEmail, req.companyId]
+    );
+    
+    if (consultantResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Consultant not found' });
+    }
+    
+    const consultant = consultantResult.rows[0];
+    
+    // Calculate period dates
+    const monthName = timesheet.month;
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
+                        'July', 'August', 'September', 'October', 'November', 'December'];
+    const timesheetMonthIndex = monthNames.findIndex(m => m.toLowerCase() === monthName.toLowerCase());
+    
+    if (timesheetMonthIndex === -1) {
+      return res.status(400).json({ error: `Invalid month: ${monthName}` });
+    }
+    
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+    
+    let year;
+    if (timesheetMonthIndex > currentMonth + 1) {
+      year = currentYear - 1;
+    } else {
+      year = currentYear;
+    }
+    
+    const periodFrom = new Date(year, timesheetMonthIndex, 1);
+    const periodTo = new Date(year, timesheetMonthIndex + 1, 0);
+    const periodFromStr = periodFrom.toISOString().split('T')[0];
+    const periodToStr = periodTo.toISOString().split('T')[0];
+    
+    // Find ALL contracts that overlap with the timesheet period
+    // A contract overlaps if: contract_start <= period_end AND contract_end >= period_start
+    const contractsResult = await pool.query(
+      `SELECT c.*, 
+              cli.first_name as client_first_name, 
+              cli.last_name as client_last_name,
+              cli.company_name as client_company_name,
+              CASE 
+                WHEN c.to_date < CURRENT_DATE THEN 'ended'
+                WHEN c.from_date > CURRENT_DATE THEN 'future'
+                ELSE 'active'
+              END as status
+       FROM contracts c
+       JOIN clients cli ON c.client_id = cli.id
+       WHERE c.consultant_id = $1 
+       AND c.company_id = $2 
+       AND c.from_date <= $3
+       AND c.to_date >= $4
+       ORDER BY c.from_date DESC`,
+      [consultant.id, req.companyId, periodToStr, periodFromStr]
+    );
+    
+    res.json({
+      contracts: contractsResult.rows,
+      consultant: {
+        id: consultant.id,
+        name: `${consultant.first_name} ${consultant.last_name}`
+      },
+      period: {
+        month: monthName,
+        year: year,
+        from: periodFromStr,
+        to: periodToStr
+      },
+      currentContractId: timesheet.contract_id,
+      requiresSelection: contractsResult.rows.length > 1
+    });
+  } catch (error) {
+    console.error('Get available contracts error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Set contract for a timesheet
+app.put('/api/timesheets/:id/contract', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { contractId } = req.body;
+    
+    if (!contractId) {
+      return res.status(400).json({ error: 'Contract ID is required' });
+    }
+    
+    // Verify contract belongs to the same company
+    const contract = await pool.query(
+      'SELECT * FROM contracts WHERE id = $1 AND company_id = $2',
+      [contractId, req.companyId]
+    );
+    
+    if (contract.rows.length === 0) {
+      return res.status(404).json({ error: 'Contract not found' });
+    }
+    
+    // Update timesheet with contract_id
+    const result = await pool.query(
+      'UPDATE automation_logs SET contract_id = $1 WHERE id = $2 RETURNING *',
+      [contractId, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Timesheet not found' });
+    }
+    
+    console.log(`✅ Contract ${contractId} set for timesheet ${id}`);
+    res.json({ 
+      success: true, 
+      message: 'Contract set successfully',
+      timesheet: result.rows[0],
+      contract: contract.rows[0]
+    });
+  } catch (error) {
+    console.error('Set contract error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Update timesheet days
 app.put('/api/timesheets/:id/days', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
@@ -1342,30 +1495,66 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     
     console.log(`Looking for contract covering period: ${periodFromStr} to ${periodToStr}`);
     
-    // ✅ FIXED: Find contract by DATE RANGE, not by status
-    // This matches the contract that was active DURING the timesheet period
-    const contractResult = await client.query(
-      `SELECT * FROM contracts 
-       WHERE consultant_id = $1 
-       AND company_id = $2 
-       AND from_date <= $3
-       AND to_date >= $4
-       ORDER BY from_date DESC 
-       LIMIT 1`,
-      [consultant.id, req.companyId, periodFromStr, periodFromStr]
-    );
+    let contract;
     
-    if (contractResult.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ 
-        error: `No contract found for ${consultant.first_name} ${consultant.last_name} covering ${monthName} ${year}. ` +
-               `Please ensure there is a contract with dates that include this period.`
-      });
+    // ✅ Check if contract is already selected on timesheet
+    if (timesheet.contract_id) {
+      console.log(`Using pre-selected contract: ${timesheet.contract_id}`);
+      const selectedContractResult = await client.query(
+        `SELECT * FROM contracts WHERE id = $1 AND company_id = $2`,
+        [timesheet.contract_id, req.companyId]
+      );
+      
+      if (selectedContractResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Selected contract not found' });
+      }
+      
+      contract = selectedContractResult.rows[0];
+    } else {
+      // ✅ Find ALL contracts that overlap with this period
+      const contractsResult = await client.query(
+        `SELECT c.*, 
+                cli.company_name as client_company_name
+         FROM contracts c
+         JOIN clients cli ON c.client_id = cli.id
+         WHERE c.consultant_id = $1 
+         AND c.company_id = $2 
+         AND c.from_date <= $3
+         AND c.to_date >= $4
+         ORDER BY c.from_date DESC`,
+        [consultant.id, req.companyId, periodToStr, periodFromStr]
+      );
+      
+      if (contractsResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ 
+          error: `No contract found for ${consultant.first_name} ${consultant.last_name} covering ${monthName} ${year}. ` +
+                 `Please ensure there is a contract with dates that include this period.`
+        });
+      }
+      
+      // ✅ If multiple contracts, require manual selection
+      if (contractsResult.rows.length > 1) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ 
+          error: 'Multiple contracts found for this period. Please select a contract first.',
+          requiresContractSelection: true,
+          contracts: contractsResult.rows.map(c => ({
+            id: c.id,
+            contract_number: c.contract_number,
+            client_company_name: c.client_company_name,
+            from_date: c.from_date,
+            to_date: c.to_date
+          }))
+        });
+      }
+      
+      // Single contract - use it
+      contract = contractsResult.rows[0];
     }
     
-    const contract = contractResult.rows[0];
-    
-    console.log(`Found contract: ${contract.contract_number} (${contract.from_date} to ${contract.to_date})`);
+    console.log(`Using contract: ${contract.contract_number} (${contract.from_date} to ${contract.to_date})`);
     
     // ✅ Generate invoice numbers with SEPARATE sequences
     // Lock the invoices table for this company to prevent race conditions
