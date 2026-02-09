@@ -229,9 +229,24 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
+// ✅ Super Admin middleware - for cross-company access
+const requireSuperAdmin = (req, res, next) => {
+  if (req.user.role !== 'superadmin') {
+    return res.status(403).json({ error: 'Super Admin access required' });
+  }
+  next();
+};
+
 // Company middleware
 const checkCompanyAccess = (req, res, next) => {
-  req.companyId = req.user.company_id;
+  // Super admin can override company_id via header
+  if (req.user.role === 'superadmin' && req.headers['x-impersonate-company']) {
+    req.companyId = parseInt(req.headers['x-impersonate-company']);
+    req.isImpersonating = true;
+  } else {
+    req.companyId = req.user.company_id;
+    req.isImpersonating = false;
+  }
   next();
 };
 
@@ -2616,6 +2631,199 @@ app.put('/api/auth/change-password', authenticateToken, async (req, res) => {
     res.json({ message: 'Password changed successfully' });
   } catch (error) {
     console.error('Change password error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// =============================================
+// SUPER ADMIN ROUTES
+// =============================================
+
+// Get all companies (super admin only)
+app.get('/api/superadmin/companies', authenticateToken, requireSuperAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        c.*,
+        (SELECT COUNT(*) FROM users WHERE company_id = c.id) as user_count,
+        (SELECT COUNT(*) FROM consultants WHERE company_id = c.id) as consultant_count,
+        (SELECT COUNT(*) FROM clients WHERE company_id = c.id) as client_count,
+        (SELECT COUNT(*) FROM contracts WHERE company_id = c.id) as contract_count,
+        (SELECT COUNT(*) FROM invoices WHERE company_id = c.id) as invoice_count
+      FROM companies c
+      ORDER BY c.name ASC
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get companies error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get company details with users (super admin only)
+app.get('/api/superadmin/companies/:id', authenticateToken, requireSuperAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const companyResult = await pool.query('SELECT * FROM companies WHERE id = $1', [id]);
+    if (companyResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+    
+    const usersResult = await pool.query(
+      'SELECT id, email, first_name, last_name, role, active, created_at FROM users WHERE company_id = $1 ORDER BY created_at DESC',
+      [id]
+    );
+    
+    res.json({
+      company: companyResult.rows[0],
+      users: usersResult.rows
+    });
+  } catch (error) {
+    console.error('Get company details error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Generate impersonation token (super admin only)
+app.post('/api/superadmin/impersonate/:companyId', authenticateToken, requireSuperAdmin, async (req, res) => {
+  try {
+    const { companyId } = req.params;
+    
+    // Verify company exists
+    const companyResult = await pool.query('SELECT * FROM companies WHERE id = $1', [companyId]);
+    if (companyResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+    
+    // Get first admin user of that company (or any user)
+    const userResult = await pool.query(
+      `SELECT * FROM users WHERE company_id = $1 AND active = true ORDER BY role = 'admin' DESC, created_at ASC LIMIT 1`,
+      [companyId]
+    );
+    
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'No active users in this company' });
+    }
+    
+    const targetUser = userResult.rows[0];
+    const company = companyResult.rows[0];
+    
+    // Generate a token for the target user
+    const token = jwt.sign(
+      { userId: targetUser.id, companyId: targetUser.company_id, impersonatedBy: req.user.id },
+      process.env.JWT_SECRET || 'fallback-secret',
+      { expiresIn: '24h' }
+    );
+    
+    // Log impersonation
+    console.log(`🔐 Super admin ${req.user.email} (ID: ${req.user.id}) impersonating company "${company.name}" (ID: ${companyId}) as user ${targetUser.email}`);
+    
+    res.json({
+      token,
+      user: {
+        id: targetUser.id,
+        email: targetUser.email,
+        firstName: targetUser.first_name,
+        lastName: targetUser.last_name,
+        role: targetUser.role,
+        companyId: targetUser.company_id,
+        companyName: company.name
+      },
+      impersonatedBy: {
+        id: req.user.id,
+        email: req.user.email
+      }
+    });
+  } catch (error) {
+    console.error('Impersonate error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create new company (super admin only)
+app.post('/api/superadmin/companies', authenticateToken, requireSuperAdmin, async (req, res) => {
+  try {
+    const { name, email, adminFirstName, adminLastName, adminPassword } = req.body;
+    
+    if (!name || !email || !adminFirstName || !adminLastName || !adminPassword) {
+      return res.status(400).json({ error: 'All fields are required' });
+    }
+    
+    // Check if company name or admin email already exists
+    const existingCompany = await pool.query('SELECT id FROM companies WHERE LOWER(name) = LOWER($1)', [name]);
+    if (existingCompany.rows.length > 0) {
+      return res.status(400).json({ error: 'Company name already exists' });
+    }
+    
+    const existingUser = await pool.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+    if (existingUser.rows.length > 0) {
+      return res.status(400).json({ error: 'Email already in use' });
+    }
+    
+    // Create company
+    const companyResult = await pool.query(
+      'INSERT INTO companies (name, created_at) VALUES ($1, CURRENT_TIMESTAMP) RETURNING *',
+      [name]
+    );
+    const newCompany = companyResult.rows[0];
+    
+    // Create admin user
+    const hashedPassword = await bcrypt.hash(adminPassword, 10);
+    const userResult = await pool.query(
+      `INSERT INTO users (email, password_hash, first_name, last_name, company_id, role, active, created_at) 
+       VALUES ($1, $2, $3, $4, $5, 'admin', true, CURRENT_TIMESTAMP) RETURNING id, email, first_name, last_name, role`,
+      [email, hashedPassword, adminFirstName, adminLastName, newCompany.id]
+    );
+    
+    res.json({
+      company: newCompany,
+      admin: userResult.rows[0]
+    });
+  } catch (error) {
+    console.error('Create company error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update company (super admin only)
+app.put('/api/superadmin/companies/:id', authenticateToken, requireSuperAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name } = req.body;
+    
+    const result = await pool.query(
+      'UPDATE companies SET name = $1 WHERE id = $2 RETURNING *',
+      [name, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Update company error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get super admin dashboard stats
+app.get('/api/superadmin/stats', authenticateToken, requireSuperAdmin, async (req, res) => {
+  try {
+    const stats = await pool.query(`
+      SELECT 
+        (SELECT COUNT(*) FROM companies) as total_companies,
+        (SELECT COUNT(*) FROM users) as total_users,
+        (SELECT COUNT(*) FROM consultants) as total_consultants,
+        (SELECT COUNT(*) FROM clients) as total_clients,
+        (SELECT COUNT(*) FROM contracts) as total_contracts,
+        (SELECT COUNT(*) FROM invoices) as total_invoices,
+        (SELECT COUNT(*) FROM automation_logs) as total_timesheets
+    `);
+    res.json(stats.rows[0]);
+  } catch (error) {
+    console.error('Get stats error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
