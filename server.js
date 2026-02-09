@@ -1064,7 +1064,11 @@ app.post('/api/contracts/batch', authenticateToken, requireAdmin, checkCompanyAc
       let paramIndex = 1;
       
       for (const c of chunk) {
-        placeholders.push(`($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7}, $${paramIndex + 8}, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11})`);
+        const timestamp = Date.now() + Math.random() * 1000; // Unique per row
+        const consultantContractId = `CONS-${Math.floor(timestamp)}`;
+        const clientContractId = `CLI-${Math.floor(timestamp)}`;
+        
+        placeholders.push(`($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7}, $${paramIndex + 8}, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11}, $${paramIndex + 12}, $${paramIndex + 13})`);
         values.push(
           c.contractNumber, c.consultantId, c.clientId,
           c.fromDate, c.toDate,
@@ -1073,14 +1077,16 @@ app.post('/api/contracts/batch', authenticateToken, requireAdmin, checkCompanyAc
           parseFloat(c.vatRate) || null,
           c.consultantVatEnabled === true || c.consultantVatEnabled === 'true',
           parseFloat(c.consultantVatRate) || null,
+          consultantContractId,
+          clientContractId,
           req.companyId
         );
-        paramIndex += 12;
+        paramIndex += 14;
       }
       
       try {
         const result = await pool.query(`
-          INSERT INTO contracts (contract_number, consultant_id, client_id, from_date, to_date, purchase_price, sell_price, vat_enabled, vat_rate, consultant_vat_enabled, consultant_vat_rate, company_id)
+          INSERT INTO contracts (contract_number, consultant_id, client_id, from_date, to_date, purchase_price, sell_price, vat_enabled, vat_rate, consultant_vat_enabled, consultant_vat_rate, consultant_contract_id, client_contract_id, company_id)
           VALUES ${placeholders.join(', ')}
           RETURNING id
         `, values);
