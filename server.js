@@ -396,8 +396,13 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    // Find user
-    const result = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    // Find user with company name
+    const result = await pool.query(`
+      SELECT u.*, c.name as company_name 
+      FROM users u 
+      LEFT JOIN companies c ON u.company_id = c.id 
+      WHERE u.email = $1
+    `, [email]);
     const user = result.rows[0];
 
     if (!user || !await bcrypt.compare(password, user.password_hash)) {
@@ -418,7 +423,7 @@ app.post('/api/auth/login', async (req, res) => {
       { expiresIn: '24h' }
     );
 
-    // ✅ UPDATED: Return permissions in login response
+    // ✅ UPDATED: Return permissions and company name in login response
     res.json({
       token,
       user: {
@@ -429,6 +434,7 @@ app.post('/api/auth/login', async (req, res) => {
         role: user.role,
         permissions: user.permissions || DEFAULT_PERMISSIONS[user.role] || DEFAULT_PERMISSIONS.operator,
         companyId: user.company_id,
+        companyName: user.company_name,
         active: user.active
       }
     });
