@@ -58,7 +58,7 @@ app.use(cors({
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Impersonate-Company']
 }));
 
 // Handle preflight requests explicitly
@@ -245,6 +245,7 @@ const checkCompanyAccess = (req, res, next) => {
   if (req.user.role === 'superadmin' && impersonateHeader) {
     req.companyId = parseInt(impersonateHeader);
     req.isImpersonating = true;
+    console.log('👁️ Super admin', req.user.email, 'viewing company:', req.companyId);
   } else {
     req.companyId = req.user.company_id;
     req.isImpersonating = false;
