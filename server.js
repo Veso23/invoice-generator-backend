@@ -242,12 +242,9 @@ const checkCompanyAccess = (req, res, next) => {
   // Super admin can override company_id via header
   const impersonateHeader = req.headers['x-impersonate-company'];
   
-  console.log('🔍 checkCompanyAccess - user role:', req.user.role, ', header:', impersonateHeader);
-  
   if (req.user.role === 'superadmin' && impersonateHeader) {
     req.companyId = parseInt(impersonateHeader);
     req.isImpersonating = true;
-    console.log('👁️ Super admin viewing company:', req.companyId);
   } else {
     req.companyId = req.user.company_id;
     req.isImpersonating = false;
