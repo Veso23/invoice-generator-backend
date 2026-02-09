@@ -223,7 +223,7 @@ const authenticateToken = async (req, res, next) => {
 
 // ✅ Admin-only middleware - MUST BE OUTSIDE authenticateToken
 const requireAdmin = (req, res, next) => {
-  if (req.user.role !== 'admin') {
+  if (req.user.role !== 'admin' && req.user.role !== 'superadmin') {
     return res.status(403).json({ error: 'Admin access required' });
   }
   next();
@@ -508,6 +508,63 @@ app.post('/api/consultants', authenticateToken, checkCompanyAccess, async (req, 
   }
 });
 
+// POST - Batch add consultants (efficient bulk insert)
+app.post('/api/consultants/batch', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { consultants } = req.body;
+    
+    if (!Array.isArray(consultants) || consultants.length === 0) {
+      return res.status(400).json({ error: 'consultants array is required' });
+    }
+    
+    // Limit batch size
+    if (consultants.length > 1000) {
+      return res.status(400).json({ error: 'Maximum 1000 records per batch' });
+    }
+    
+    const results = { success: 0, failed: 0, errors: [] };
+    
+    // Process in chunks of 100 for efficiency
+    const chunkSize = 100;
+    for (let i = 0; i < consultants.length; i += chunkSize) {
+      const chunk = consultants.slice(i, i + chunkSize);
+      
+      // Build multi-row INSERT
+      const values = [];
+      const placeholders = [];
+      let paramIndex = 1;
+      
+      for (const c of chunk) {
+        placeholders.push(`($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7}, $${paramIndex + 8}, $${paramIndex + 9}, $${paramIndex + 10})`);
+        values.push(
+          c.firstName || '', c.lastName || '', c.companyName || '', 
+          c.companyAddress || '', c.companyVat || '', c.phone || '', 
+          c.email || '', c.iban || '', c.swift || '', 
+          c.consultantContractId || '', req.companyId
+        );
+        paramIndex += 11;
+      }
+      
+      try {
+        await pool.query(`
+          INSERT INTO consultants (first_name, last_name, company_name, company_address, company_vat, phone, email, iban, swift, consultant_contract_id, company_id)
+          VALUES ${placeholders.join(', ')}
+          ON CONFLICT (email, company_id) DO NOTHING
+        `, values);
+        results.success += chunk.length;
+      } catch (error) {
+        results.failed += chunk.length;
+        results.errors.push(`Chunk ${Math.floor(i / chunkSize) + 1}: ${error.message}`);
+      }
+    }
+    
+    res.json(results);
+  } catch (error) {
+    console.error('Error batch adding consultants:', error);
+    res.status(500).json({ error: `Failed to batch add consultants: ${error.message}` });
+  }
+});
+
 // PUT - Update consultant (✅ FIXED: Added checkCompanyAccess and company scoping)
 app.put('/api/consultants/:id', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
@@ -656,6 +713,61 @@ app.post('/api/clients', authenticateToken, checkCompanyAccess, async (req, res)
     console.error('Error adding client:', error);
     // Return actual error message for debugging
     res.status(500).json({ error: `Failed to add client: ${error.message}` });
+  }
+});
+
+// POST - Batch add clients (efficient bulk insert)
+app.post('/api/clients/batch', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { clients } = req.body;
+    
+    if (!Array.isArray(clients) || clients.length === 0) {
+      return res.status(400).json({ error: 'clients array is required' });
+    }
+    
+    if (clients.length > 1000) {
+      return res.status(400).json({ error: 'Maximum 1000 records per batch' });
+    }
+    
+    const results = { success: 0, failed: 0, errors: [] };
+    
+    // Process in chunks of 100
+    const chunkSize = 100;
+    for (let i = 0; i < clients.length; i += chunkSize) {
+      const chunk = clients.slice(i, i + chunkSize);
+      
+      const values = [];
+      const placeholders = [];
+      let paramIndex = 1;
+      
+      for (const c of chunk) {
+        placeholders.push(`($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7}, $${paramIndex + 8}, $${paramIndex + 9}, $${paramIndex + 10})`);
+        values.push(
+          c.firstName || '', c.lastName || '', c.companyName || '', 
+          c.companyAddress || '', c.companyVat || '', c.phone || '', 
+          c.email || '', c.iban || '', c.swift || '', 
+          c.clientContractId || '', req.companyId
+        );
+        paramIndex += 11;
+      }
+      
+      try {
+        await pool.query(`
+          INSERT INTO clients (first_name, last_name, company_name, company_address, company_vat, phone, email, iban, swift, client_contract_id, company_id)
+          VALUES ${placeholders.join(', ')}
+          ON CONFLICT (email, company_id) DO NOTHING
+        `, values);
+        results.success += chunk.length;
+      } catch (error) {
+        results.failed += chunk.length;
+        results.errors.push(`Chunk ${Math.floor(i / chunkSize) + 1}: ${error.message}`);
+      }
+    }
+    
+    res.json(results);
+  } catch (error) {
+    console.error('Error batch adding clients:', error);
+    res.status(500).json({ error: `Failed to batch add clients: ${error.message}` });
   }
 });
 
@@ -924,6 +1036,65 @@ app.post('/api/contracts', authenticateToken, requireAdmin, checkCompanyAccess, 
     } else {
       res.status(500).json({ error: error.message });
     }
+  }
+});
+
+// POST - Batch add contracts (efficient bulk insert)
+app.post('/api/contracts/batch', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { contracts } = req.body;
+    
+    if (!Array.isArray(contracts) || contracts.length === 0) {
+      return res.status(400).json({ error: 'contracts array is required' });
+    }
+    
+    if (contracts.length > 500) {
+      return res.status(400).json({ error: 'Maximum 500 contracts per batch' });
+    }
+    
+    const results = { success: 0, failed: 0, errors: [] };
+    
+    // Process in chunks of 50 (contracts have more fields)
+    const chunkSize = 50;
+    for (let i = 0; i < contracts.length; i += chunkSize) {
+      const chunk = contracts.slice(i, i + chunkSize);
+      
+      const values = [];
+      const placeholders = [];
+      let paramIndex = 1;
+      
+      for (const c of chunk) {
+        placeholders.push(`($${paramIndex}, $${paramIndex + 1}, $${paramIndex + 2}, $${paramIndex + 3}, $${paramIndex + 4}, $${paramIndex + 5}, $${paramIndex + 6}, $${paramIndex + 7}, $${paramIndex + 8}, $${paramIndex + 9}, $${paramIndex + 10}, $${paramIndex + 11})`);
+        values.push(
+          c.contractNumber, c.consultantId, c.clientId,
+          c.fromDate, c.toDate,
+          parseFloat(c.purchasePrice) || 0, parseFloat(c.sellPrice) || 0,
+          c.vatEnabled === true || c.vatEnabled === 'true',
+          parseFloat(c.vatRate) || null,
+          c.consultantVatEnabled === true || c.consultantVatEnabled === 'true',
+          parseFloat(c.consultantVatRate) || null,
+          req.companyId
+        );
+        paramIndex += 12;
+      }
+      
+      try {
+        await pool.query(`
+          INSERT INTO contracts (contract_number, consultant_id, client_id, from_date, to_date, purchase_price, sell_price, vat_enabled, vat_rate, consultant_vat_enabled, consultant_vat_rate, company_id)
+          VALUES ${placeholders.join(', ')}
+          ON CONFLICT (contract_number, company_id) DO NOTHING
+        `, values);
+        results.success += chunk.length;
+      } catch (error) {
+        results.failed += chunk.length;
+        results.errors.push(`Chunk ${Math.floor(i / chunkSize) + 1}: ${error.message}`);
+      }
+    }
+    
+    res.json(results);
+  } catch (error) {
+    console.error('Error batch adding contracts:', error);
+    res.status(500).json({ error: `Failed to batch add contracts: ${error.message}` });
   }
 });
 
