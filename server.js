@@ -2507,22 +2507,31 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     if (invoice.invoice_type === 'consultant') {
       fromInfo = {
         name: `${invoice.consultant_first_name} ${invoice.consultant_last_name}`,
-        company: invoice.consultant_company_name, address: invoice.consultant_company_address,
-        vat: invoice.consultant_company_vat, iban: invoice.consultant_iban, swift: invoice.consultant_swift
+        company: invoice.consultant_company_name, 
+        address: invoice.consultant_company_address,
+        vat: invoice.consultant_company_vat, 
+        iban: invoice.consultant_iban, 
+        swift: invoice.consultant_swift
       };
       toInfo = {
-        name: invoice.representative_name, company: invoice.company_name,
-        address: invoice.company_address, vat: invoice.company_vat_number
+        name: invoice.representative_name, 
+        company: invoice.company_name,
+        address: invoice.company_address, 
+        vat: invoice.company_vat_number
       };
     } else {
       fromInfo = {
-        name: invoice.representative_name, company: invoice.company_name,
-        address: invoice.company_address, vat: invoice.company_vat_number,
-        iban: invoice.bank_iban, swift: invoice.bank_swift
+        name: invoice.representative_name, 
+        company: invoice.company_name,
+        address: invoice.company_address, 
+        vat: invoice.company_vat_number,
+        iban: invoice.bank_iban, 
+        swift: invoice.bank_swift
       };
       toInfo = {
         name: `${invoice.client_first_name} ${invoice.client_last_name}`,
-        company: invoice.client_company_name, address: invoice.client_company_address,
+        company: invoice.client_company_name, 
+        address: invoice.client_company_address,
         vat: invoice.client_company_vat
       };
     }
@@ -2551,157 +2560,312 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     const invoiceDate = new Date(invoice.period_to).toLocaleDateString('en-GB');
     const periodMonth = new Date(invoice.period_to).toLocaleDateString('en-US', { month: 'long' });
 
+    // Helper function to sanitize text (remove problematic characters)
+    const sanitize = (text) => {
+      if (!text) return '';
+      return text.toString()
+        .replace(/[\x00-\x1F\x7F]/g, '')
+        .replace(/ÿý/g, '')
+        .trim();
+    };
+
     // ========================================
-    // TEMPLATE: MODERN (Blue header with gradient effect)
+    // TEMPLATE: MODERN (Blue header)
     // ========================================
     if (template === 'modern') {
       // Header background
-      doc.rect(0, 0, pageWidth, 140).fill('#1e40af');
+      doc.rect(0, 0, pageWidth, 120).fill('#1e40af');
       
       // Company name in header
-      doc.fontSize(28).font('Helvetica-Bold').fillColor('#ffffff')
-         .text(fromInfo.company, margin, 45, { width: pageWidth - 100 });
+      doc.fontSize(24).font('Helvetica-Bold').fillColor('#ffffff')
+         .text(sanitize(fromInfo.company), margin, 40, { width: pageWidth - 200 });
       
-      // Invoice badge
-      doc.roundedRect(pageWidth - 200, 40, 150, 50, 8).fill('#3b82f6');
-      doc.fontSize(10).fillColor('#ffffff').font('Helvetica')
-         .text('INVOICE', pageWidth - 190, 50, { width: 130, align: 'center' });
-      doc.fontSize(14).font('Helvetica-Bold')
-         .text(invoice.invoice_number, pageWidth - 190, 65, { width: 130, align: 'center' });
+      // Invoice label and number
+      doc.roundedRect(pageWidth - 180, 35, 130, 45, 6).fill('#3b82f6');
+      doc.fontSize(9).fillColor('#ffffff').font('Helvetica')
+         .text('INVOICE', pageWidth - 170, 43, { width: 110, align: 'center' });
+      doc.fontSize(11).font('Helvetica-Bold')
+         .text(sanitize(invoice.invoice_number), pageWidth - 170, 58, { width: 110, align: 'center' });
       
-      // Date below header
-      doc.fillColor('#64748b').fontSize(11).font('Helvetica')
-         .text(`Issue Date: ${invoiceDate}`, margin, 155);
+      // Issue Date
+      doc.fillColor('#64748b').fontSize(10).font('Helvetica')
+         .text(`Issue Date: ${invoiceDate}`, margin, 135);
       
-      // Two column layout for addresses
-      let yPos = 190;
       const leftCol = margin;
-      const rightCol = pageWidth / 2 + 30;
+      const rightCol = pageWidth / 2 + 20;
       
-      // TO Section
-      doc.roundedRect(leftCol - 10, yPos - 10, 240, 110, 8).fill('#f1f5f9');
-      doc.fillColor('#1e40af').fontSize(10).font('Helvetica-Bold').text('BILL TO', leftCol, yPos);
-      yPos += 18;
-      doc.fillColor('#0f172a').fontSize(12).font('Helvetica-Bold').text(toInfo.company, leftCol, yPos, { width: 220 });
-      yPos += 16;
-      doc.fillColor('#475569').fontSize(10).font('Helvetica').text(toInfo.name, leftCol, yPos);
-      yPos += 14;
-      doc.text(toInfo.address || '', leftCol, yPos, { width: 220 });
-      yPos += 20;
-      doc.fillColor('#64748b').text(`VAT: ${toInfo.vat || 'N/A'}`, leftCol, yPos);
+      // BILL TO Section
+      let billY = 165;
+      doc.roundedRect(leftCol - 10, billY - 8, 230, 105, 6).fill('#f8fafc');
+      doc.fillColor('#1e40af').fontSize(9).font('Helvetica-Bold').text('BILL TO', leftCol, billY);
+      billY += 18;
+      doc.fillColor('#0f172a').fontSize(11).font('Helvetica-Bold')
+         .text(sanitize(toInfo.company), leftCol, billY, { width: 210 });
+      billY += 18;
+      doc.fillColor('#475569').fontSize(10).font('Helvetica')
+         .text(sanitize(toInfo.name), leftCol, billY);
+      billY += 16;
+      doc.text(sanitize(toInfo.address) || '', leftCol, billY, { width: 210, lineGap: 4 });
+      billY += 24;
+      if (toInfo.vat) {
+        doc.fillColor('#64748b').text(`VAT: ${sanitize(toInfo.vat)}`, leftCol, billY);
+      }
       
       // FROM Section
-      let fromY = 190;
-      doc.roundedRect(rightCol - 10, fromY - 10, 240, 110, 8).fill('#f1f5f9');
-      doc.fillColor('#1e40af').fontSize(10).font('Helvetica-Bold').text('FROM', rightCol, fromY);
+      let fromY = 165;
+      doc.roundedRect(rightCol - 10, fromY - 8, 230, 105, 6).fill('#f8fafc');
+      doc.fillColor('#1e40af').fontSize(9).font('Helvetica-Bold').text('FROM', rightCol, fromY);
       fromY += 18;
-      doc.fillColor('#0f172a').fontSize(12).font('Helvetica-Bold').text(fromInfo.company, rightCol, fromY, { width: 220 });
-      fromY += 16;
-      doc.fillColor('#475569').fontSize(10).font('Helvetica').text(fromInfo.address || '', rightCol, fromY, { width: 220 });
-      fromY += 20;
-      doc.fillColor('#64748b').text(`VAT: ${fromInfo.vat || 'N/A'}`, rightCol, fromY);
+      doc.fillColor('#0f172a').fontSize(11).font('Helvetica-Bold')
+         .text(sanitize(fromInfo.company), rightCol, fromY, { width: 210 });
+      fromY += 18;
+      doc.fillColor('#475569').fontSize(10).font('Helvetica')
+         .text(sanitize(fromInfo.address) || '', rightCol, fromY, { width: 210, lineGap: 4 });
+      fromY += 24;
+      if (fromInfo.vat) {
+        doc.fillColor('#64748b').text(`VAT: ${sanitize(fromInfo.vat)}`, rightCol, fromY);
+      }
       
       // Table
-      const tableTop = 330;
-      const col1 = margin, col2 = margin + 40, col3 = margin + 280, col4 = margin + 350, col5 = margin + 430;
+      const tableTop = 295;
+      const col1 = margin;
+      const col2 = margin + 35;
+      const col3 = margin + 280;
+      const col4 = margin + 340;
+      const col5 = margin + 410;
       
       // Table header
-      doc.rect(margin - 10, tableTop - 10, pageWidth - 80, 30).fill('#1e40af');
+      doc.rect(margin - 5, tableTop - 8, pageWidth - 90, 28).fill('#1e40af');
       doc.fillColor('#ffffff').fontSize(9).font('Helvetica-Bold');
+      doc.text('#', col1, tableTop);
+      doc.text('Description', col2, tableTop);
+      doc.text('Days', col3, tableTop, { width: 40, align: 'right' });
+      doc.text('Rate', col4, tableTop, { width: 50, align: 'right' });
+      doc.text('Amount', col5, tableTop, { width: 70, align: 'right' });
+      
+      // Table row
+      const rowTop = tableTop + 32;
+      doc.fillColor('#0f172a').fontSize(10).font('Helvetica');
+      doc.text('1', col1, rowTop);
+      
+      if (invoice.invoice_type === 'client') {
+        doc.font('Helvetica-Bold')
+           .text(`IT Services - ${sanitize(invoice.consultant_first_name)} ${sanitize(invoice.consultant_last_name)}`, col2, rowTop, { width: 230 });
+        doc.font('Helvetica').fillColor('#64748b').fontSize(9)
+           .text(`${periodMonth} • Contract: ${sanitize(invoice.client_contract_id) || 'N/A'}`, col2, rowTop + 14);
+      } else {
+        doc.font('Helvetica-Bold')
+           .text(`IT Services - ${periodMonth}`, col2, rowTop, { width: 230 });
+        doc.font('Helvetica').fillColor('#64748b').fontSize(9)
+           .text(`Contract: ${sanitize(invoice.consultant_contract_id) || 'N/A'}`, col2, rowTop + 14);
+      }
+      
+      doc.fillColor('#0f172a').fontSize(10).font('Helvetica');
+      doc.text(invoice.days_worked.toString(), col3, rowTop, { width: 40, align: 'right' });
+      doc.text(`€${parseFloat(invoice.daily_rate).toFixed(2)}`, col4, rowTop, { width: 50, align: 'right' });
+      doc.text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col5, rowTop, { width: 70, align: 'right' });
+      
+      // Totals section - MOVED LEFT
+      let summaryTop = rowTop + 50;
+      const summaryCol1 = margin + 260;  // Moved left
+      const summaryCol2 = margin + 380;  // Moved left
+      
+      doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#e2e8f0').lineWidth(1).stroke();
+      summaryTop += 12;
+      
+      if (invoice.vat_enabled) {
+        doc.fillColor('#64748b').fontSize(10).font('Helvetica');
+        doc.text('Subtotal:', summaryCol1, summaryTop, { width: 100, align: 'right' });
+        doc.fillColor('#0f172a').text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, summaryCol2, summaryTop, { width: 70, align: 'right' });
+        summaryTop += 18;
+        
+        doc.fillColor('#64748b').text(`VAT (${parseFloat(invoice.vat_rate).toFixed(0)}%):`, summaryCol1, summaryTop, { width: 100, align: 'right' });
+        doc.fillColor('#0f172a').text(`€${parseFloat(invoice.vat_amount).toFixed(2)}`, summaryCol2, summaryTop, { width: 70, align: 'right' });
+        summaryTop += 22;
+      }
+      
+      // Total box - MOVED LEFT
+      doc.roundedRect(summaryCol1 - 10, summaryTop - 5, 180, 32, 5).fill('#1e40af');
+      doc.fillColor('#ffffff').fontSize(10).font('Helvetica')
+         .text('TOTAL:', summaryCol1, summaryTop + 4, { width: 100, align: 'right' });
+      doc.fontSize(13).font('Helvetica-Bold')
+         .text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, summaryCol2, summaryTop + 2, { width: 70, align: 'right' });
+      
+      // Payment Details section
+      const bankTop = summaryTop + 55;
+      doc.fillColor('#1e40af').fontSize(11).font('Helvetica-Bold').text('Payment Details', margin, bankTop);
+      doc.moveTo(margin, bankTop + 14).lineTo(margin + 120, bankTop + 14).strokeColor('#1e40af').lineWidth(2).stroke();
+      
+      doc.fillColor('#475569').fontSize(10).font('Helvetica');
+      doc.text(`IBAN: ${sanitize(fromInfo.iban) || 'N/A'}`, margin, bankTop + 26);
+      doc.text(`SWIFT: ${sanitize(fromInfo.swift) || 'N/A'}`, margin, bankTop + 42);
+      
+      // 30-day payment notice
+      doc.fillColor('#64748b').fontSize(9).font('Helvetica')
+         .text('We kindly ask this invoice to be paid within 30 days, mentioning the invoice number.', margin, bankTop + 62, { width: 350 });
+      
+      // Footer
+      doc.fillColor('#94a3b8').fontSize(9).font('Helvetica')
+         .text('Thank you for your business!', 0, pageHeight - 50, { align: 'center', width: pageWidth });
+    }
+    
+    // ========================================
+    // TEMPLATE: CLASSIC (Default)
+    // ========================================
+    else if (template === 'classic' || !template) {
+      // Company header
+      doc.fontSize(20).font('Helvetica-Bold').fillColor('#0f172a')
+         .text(sanitize(fromInfo.company), margin, 50);
+      
+      const leftCol = margin;
+      const rightCol = pageWidth / 2 + 20;
+      
+      // BILL TO
+      let yPos = 100;
+      doc.fontSize(11).font('Helvetica-Bold').fillColor('#475569').text('BILL TO', leftCol, yPos);
+      yPos += 18;
+      doc.fontSize(10).font('Helvetica').fillColor('#0f172a');
+      doc.text(sanitize(toInfo.company), leftCol, yPos, { width: 220 });
+      yPos += 16;
+      doc.text(sanitize(toInfo.name), leftCol, yPos);
+      yPos += 16;
+      doc.fillColor('#64748b').text(sanitize(toInfo.address) || '', leftCol, yPos, { width: 220, lineGap: 4 });
+      yPos += 22;
+      if (toInfo.vat) {
+        doc.text(`VAT: ${sanitize(toInfo.vat)}`, leftCol, yPos);
+      }
+
+      // FROM
+      let fromYPos = 100;
+      doc.fillColor('#475569').fontSize(11).font('Helvetica-Bold').text('FROM', rightCol, fromYPos);
+      fromYPos += 18;
+      doc.fontSize(10).font('Helvetica').fillColor('#0f172a');
+      doc.text(sanitize(fromInfo.company), rightCol, fromYPos, { width: 220 });
+      fromYPos += 16;
+      doc.fillColor('#64748b').text(sanitize(fromInfo.address) || '', rightCol, fromYPos, { width: 220, lineGap: 4 });
+      fromYPos += 22;
+      if (fromInfo.vat) {
+        doc.text(`VAT: ${sanitize(fromInfo.vat)}`, rightCol, fromYPos);
+      }
+
+      // Invoice title
+      doc.fontSize(16).font('Helvetica-Bold').fillColor('#0f172a')
+         .text(`INVOICE ${invoice.invoice_number}`, margin, 230, { align: 'center', width: pageWidth - (margin * 2) });
+      doc.fontSize(11).font('Helvetica').fillColor('#64748b')
+         .text(`Date: ${invoiceDate}`, margin, 252, { align: 'center', width: pageWidth - (margin * 2) });
+
+      // Table
+      const tableTop = 290;
+      const col1 = margin, col2 = margin + 40, col3 = margin + 280, col4 = margin + 350, col5 = margin + 430;
+
+      doc.fontSize(10).font('Helvetica-Bold').fillColor('#475569');
       doc.text('#', col1, tableTop);
       doc.text('Description', col2, tableTop);
       doc.text('Days', col3, tableTop, { width: 50, align: 'right' });
       doc.text('Rate', col4, tableTop, { width: 60, align: 'right' });
       doc.text('Amount', col5, tableTop, { width: 60, align: 'right' });
-      
-      // Table row
-      const rowTop = tableTop + 35;
-      doc.fillColor('#0f172a').fontSize(10).font('Helvetica');
+      doc.moveTo(margin, tableTop + 14).lineTo(pageWidth - margin, tableTop + 14).strokeColor('#cbd5e1').stroke();
+
+      const rowTop = tableTop + 26;
+      doc.fontSize(10).font('Helvetica').fillColor('#0f172a');
       doc.text('1', col1, rowTop);
+
       if (invoice.invoice_type === 'client') {
-        doc.font('Helvetica-Bold').text(`IT Services / ${invoice.consultant_first_name} ${invoice.consultant_last_name}`, col2, rowTop);
-        doc.font('Helvetica').fillColor('#64748b').fontSize(9).text(`${periodMonth} • Contract: ${invoice.client_contract_id || 'N/A'}`, col2, rowTop + 14);
+        doc.text(`IT Services - ${sanitize(invoice.consultant_first_name)} ${sanitize(invoice.consultant_last_name)} - ${periodMonth}`, col2, rowTop, { width: 230 });
+        doc.fillColor('#64748b').fontSize(9).text(`Contract: ${sanitize(invoice.client_contract_id) || 'N/A'}`, col2, rowTop + 13);
       } else {
-        doc.font('Helvetica-Bold').text(`IT Services - ${periodMonth}`, col2, rowTop);
-        doc.font('Helvetica').fillColor('#64748b').fontSize(9).text(`Contract: ${invoice.consultant_contract_id || 'N/A'}`, col2, rowTop + 14);
+        doc.text(`IT Services - ${periodMonth}`, col2, rowTop, { width: 230 });
+        doc.fillColor('#64748b').fontSize(9).text(`Contract: ${sanitize(invoice.consultant_contract_id) || 'N/A'}`, col2, rowTop + 13);
       }
+      
       doc.fillColor('#0f172a').fontSize(10);
       doc.text(invoice.days_worked.toString(), col3, rowTop, { width: 50, align: 'right' });
       doc.text(`€${parseFloat(invoice.daily_rate).toFixed(2)}`, col4, rowTop, { width: 60, align: 'right' });
       doc.text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col5, rowTop, { width: 60, align: 'right' });
-      
-      // Totals
-      let summaryTop = rowTop + 60;
-      doc.moveTo(col3, summaryTop - 10).lineTo(pageWidth - margin, summaryTop - 10).strokeColor('#e2e8f0').stroke();
+
+      // Totals - MOVED LEFT
+      let summaryTop = rowTop + 45;
+      const summaryCol1 = margin + 280;
+      const summaryCol2 = margin + 380;
       
       if (invoice.vat_enabled) {
-        doc.fillColor('#64748b').fontSize(10).font('Helvetica');
-        doc.text('Subtotal:', col4, summaryTop, { width: 60, align: 'right' });
-        doc.fillColor('#0f172a').text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col5, summaryTop, { width: 60, align: 'right' });
+        doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#e2e8f0').stroke();
+        summaryTop += 12;
+        
+        doc.fontSize(10).font('Helvetica').fillColor('#64748b');
+        doc.text('Subtotal:', summaryCol1, summaryTop, { width: 80, align: 'right' });
+        doc.fillColor('#0f172a').text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, summaryCol2, summaryTop, { width: 70, align: 'right' });
+        summaryTop += 16;
+        
+        doc.fillColor('#64748b').text(`VAT ${parseFloat(invoice.vat_rate).toFixed(0)}%:`, summaryCol1, summaryTop, { width: 80, align: 'right' });
+        doc.fillColor('#0f172a').text(`€${parseFloat(invoice.vat_amount).toFixed(2)}`, summaryCol2, summaryTop, { width: 70, align: 'right' });
         summaryTop += 20;
-        doc.fillColor('#64748b').text(`VAT (${parseFloat(invoice.vat_rate).toFixed(0)}%):`, col4, summaryTop, { width: 60, align: 'right' });
-        doc.fillColor('#0f172a').text(`€${parseFloat(invoice.vat_amount).toFixed(2)}`, col5, summaryTop, { width: 60, align: 'right' });
-        summaryTop += 25;
       }
+
+      doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#475569').lineWidth(1).stroke();
+      summaryTop += 12;
+      doc.fontSize(11).font('Helvetica-Bold').fillColor('#0f172a');
+      doc.text('Total:', summaryCol1, summaryTop, { width: 80, align: 'right' });
+      doc.text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, summaryCol2, summaryTop, { width: 70, align: 'right' });
+
+      // Payment section
+      const bankTop = summaryTop + 50;
+      doc.fontSize(10).font('Helvetica-Bold').fillColor('#475569').text('Payment Details', margin, bankTop);
+      doc.fontSize(10).font('Helvetica').fillColor('#0f172a');
+      doc.text(`IBAN: ${sanitize(fromInfo.iban) || 'N/A'}`, margin, bankTop + 18);
+      doc.text(`SWIFT: ${sanitize(fromInfo.swift) || 'N/A'}`, margin, bankTop + 34);
       
-      // Total box
-      doc.roundedRect(col4 - 20, summaryTop - 5, 150, 35, 6).fill('#1e40af');
-      doc.fillColor('#ffffff').fontSize(10).font('Helvetica').text('TOTAL:', col4, summaryTop + 5, { width: 60, align: 'right' });
-      doc.fontSize(14).font('Helvetica-Bold').text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, col5, summaryTop + 3, { width: 60, align: 'right' });
-      
-      // Payment info
-      const bankTop = summaryTop + 70;
-      doc.fillColor('#1e40af').fontSize(11).font('Helvetica-Bold').text('Payment Details', margin, bankTop);
-      doc.moveTo(margin, bankTop + 15).lineTo(margin + 150, bankTop + 15).strokeColor('#1e40af').lineWidth(2).stroke();
-      doc.fillColor('#475569').fontSize(10).font('Helvetica');
-      doc.text(`IBAN: ${fromInfo.iban || 'N/A'}`, margin, bankTop + 25);
-      doc.text(`SWIFT: ${fromInfo.swift || 'N/A'}`, margin, bankTop + 40);
+      // 30-day payment notice
+      doc.fillColor('#64748b').fontSize(9)
+         .text('We kindly ask this invoice to be paid within 30 days, mentioning the invoice number.', margin, bankTop + 56, { width: 350 });
       
       // Footer
-      doc.fillColor('#94a3b8').fontSize(8).text('Thank you for your business!', margin, pageHeight - 50, { align: 'center', width: pageWidth - 100 });
+      doc.fillColor('#94a3b8').fontSize(9)
+         .text('Thank you for your business!', 0, pageHeight - 50, { align: 'center', width: pageWidth });
     }
     
     // ========================================
-    // TEMPLATE: MINIMAL (Clean, simple)
+    // TEMPLATE: MINIMAL
     // ========================================
     else if (template === 'minimal') {
-      // Simple header line
-      doc.moveTo(margin, 40).lineTo(pageWidth - margin, 40).strokeColor('#0f172a').lineWidth(3).stroke();
+      // Header line
+      doc.moveTo(margin, 40).lineTo(pageWidth - margin, 40).strokeColor('#0f172a').lineWidth(2).stroke();
       
-      // Company and Invoice number on same line
-      doc.fontSize(20).font('Helvetica-Bold').fillColor('#0f172a').text(fromInfo.company, margin, 55);
-      doc.fontSize(12).font('Helvetica').fillColor('#64748b').text(`Invoice ${invoice.invoice_number}`, margin, 80);
-      doc.text(`Date: ${invoiceDate}`, pageWidth - 200, 80, { width: 150, align: 'right' });
+      // Company and invoice info
+      doc.fontSize(18).font('Helvetica-Bold').fillColor('#0f172a')
+         .text(sanitize(fromInfo.company), margin, 55);
+      doc.fontSize(11).font('Helvetica').fillColor('#64748b')
+         .text(`Invoice ${invoice.invoice_number}`, margin, 78);
+      doc.text(`Date: ${invoiceDate}`, pageWidth - 180, 78, { width: 130, align: 'right' });
       
-      // Thin line separator
-      doc.moveTo(margin, 110).lineTo(pageWidth - margin, 110).strokeColor('#e2e8f0').lineWidth(1).stroke();
+      doc.moveTo(margin, 100).lineTo(pageWidth - margin, 100).strokeColor('#e2e8f0').lineWidth(1).stroke();
       
-      // Addresses - very clean
-      let yPos = 130;
+      // Addresses with proper spacing
+      let yPos = 118;
       const leftCol = margin;
-      const rightCol = pageWidth / 2 + 40;
+      const rightCol = pageWidth / 2 + 30;
       
       doc.fillColor('#94a3b8').fontSize(9).font('Helvetica').text('BILLED TO', leftCol, yPos);
-      yPos += 15;
-      doc.fillColor('#0f172a').fontSize(11).font('Helvetica-Bold').text(toInfo.company, leftCol, yPos);
-      yPos += 15;
-      doc.fillColor('#475569').fontSize(10).font('Helvetica').text(toInfo.name, leftCol, yPos);
-      yPos += 12;
-      doc.text(toInfo.address || '', leftCol, yPos, { width: 200 });
-      yPos += 18;
-      doc.text(`VAT: ${toInfo.vat || 'N/A'}`, leftCol, yPos);
+      yPos += 16;
+      doc.fillColor('#0f172a').fontSize(11).font('Helvetica-Bold').text(sanitize(toInfo.company), leftCol, yPos);
+      yPos += 16;
+      doc.fillColor('#475569').fontSize(10).font('Helvetica').text(sanitize(toInfo.name), leftCol, yPos);
+      yPos += 14;
+      doc.text(sanitize(toInfo.address) || '', leftCol, yPos, { width: 200, lineGap: 4 });
+      yPos += 20;
+      if (toInfo.vat) doc.text(`VAT: ${sanitize(toInfo.vat)}`, leftCol, yPos);
       
-      let fromY = 130;
+      let fromY = 118;
       doc.fillColor('#94a3b8').fontSize(9).text('FROM', rightCol, fromY);
-      fromY += 15;
-      doc.fillColor('#0f172a').fontSize(11).font('Helvetica-Bold').text(fromInfo.company, rightCol, fromY);
-      fromY += 15;
-      doc.fillColor('#475569').fontSize(10).font('Helvetica').text(fromInfo.address || '', rightCol, fromY, { width: 200 });
-      fromY += 18;
-      doc.text(`VAT: ${fromInfo.vat || 'N/A'}`, rightCol, fromY);
+      fromY += 16;
+      doc.fillColor('#0f172a').fontSize(11).font('Helvetica-Bold').text(sanitize(fromInfo.company), rightCol, fromY);
+      fromY += 16;
+      doc.fillColor('#475569').fontSize(10).font('Helvetica').text(sanitize(fromInfo.address) || '', rightCol, fromY, { width: 200, lineGap: 4 });
+      fromY += 20;
+      if (fromInfo.vat) doc.text(`VAT: ${sanitize(fromInfo.vat)}`, rightCol, fromY);
       
-      // Simple table
-      const tableTop = 260;
+      // Table
+      const tableTop = 230;
       doc.moveTo(margin, tableTop).lineTo(pageWidth - margin, tableTop).strokeColor('#0f172a').lineWidth(1).stroke();
       
       const col1 = margin, col2 = margin + 280, col3 = margin + 350, col4 = margin + 430;
@@ -2711,216 +2875,152 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       doc.text('Rate', col3, tableTop + 10, { width: 60, align: 'right' });
       doc.text('Amount', col4, tableTop + 10, { width: 60, align: 'right' });
       
-      doc.moveTo(margin, tableTop + 28).lineTo(pageWidth - margin, tableTop + 28).strokeColor('#e2e8f0').stroke();
+      doc.moveTo(margin, tableTop + 26).lineTo(pageWidth - margin, tableTop + 26).strokeColor('#e2e8f0').stroke();
       
-      const rowTop = tableTop + 40;
+      const rowTop = tableTop + 38;
       doc.fillColor('#0f172a').fontSize(10).font('Helvetica');
       if (invoice.invoice_type === 'client') {
-        doc.text(`IT Services / ${invoice.consultant_first_name} ${invoice.consultant_last_name} - ${periodMonth}`, col1, rowTop);
-        doc.fillColor('#94a3b8').fontSize(9).text(`Contract: ${invoice.client_contract_id || 'N/A'}`, col1, rowTop + 14);
+        doc.text(`IT Services - ${sanitize(invoice.consultant_first_name)} ${sanitize(invoice.consultant_last_name)} - ${periodMonth}`, col1, rowTop);
+        doc.fillColor('#94a3b8').fontSize(9).text(`Contract: ${sanitize(invoice.client_contract_id) || 'N/A'}`, col1, rowTop + 13);
       } else {
         doc.text(`IT Services - ${periodMonth}`, col1, rowTop);
-        doc.fillColor('#94a3b8').fontSize(9).text(`Contract: ${invoice.consultant_contract_id || 'N/A'}`, col1, rowTop + 14);
+        doc.fillColor('#94a3b8').fontSize(9).text(`Contract: ${sanitize(invoice.consultant_contract_id) || 'N/A'}`, col1, rowTop + 13);
       }
       doc.fillColor('#0f172a').fontSize(10);
       doc.text(invoice.days_worked.toString(), col2, rowTop, { width: 50, align: 'right' });
       doc.text(`€${parseFloat(invoice.daily_rate).toFixed(2)}`, col3, rowTop, { width: 60, align: 'right' });
       doc.text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col4, rowTop, { width: 60, align: 'right' });
       
-      // Totals - right aligned, minimal
-      let summaryTop = rowTop + 55;
-      doc.moveTo(col2, summaryTop - 5).lineTo(pageWidth - margin, summaryTop - 5).strokeColor('#e2e8f0').stroke();
+      // Totals - MOVED LEFT
+      let summaryTop = rowTop + 45;
+      const summaryCol1 = margin + 260;
+      const summaryCol2 = margin + 370;
+      
+      doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#e2e8f0').stroke();
+      summaryTop += 12;
       
       if (invoice.vat_enabled) {
         doc.fillColor('#64748b').fontSize(10);
-        doc.text(`VAT ${parseFloat(invoice.vat_rate).toFixed(0)}%`, col3, summaryTop + 5, { width: 60, align: 'right' });
-        doc.fillColor('#0f172a').text(`€${parseFloat(invoice.vat_amount).toFixed(2)}`, col4, summaryTop + 5, { width: 60, align: 'right' });
-        summaryTop += 25;
+        doc.text(`VAT ${parseFloat(invoice.vat_rate).toFixed(0)}%:`, summaryCol1, summaryTop, { width: 90, align: 'right' });
+        doc.fillColor('#0f172a').text(`€${parseFloat(invoice.vat_amount).toFixed(2)}`, summaryCol2, summaryTop, { width: 70, align: 'right' });
+        summaryTop += 20;
       }
       
-      doc.moveTo(col2, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#0f172a').lineWidth(1).stroke();
-      doc.fillColor('#0f172a').fontSize(12).font('Helvetica-Bold');
-      doc.text('Total', col3, summaryTop + 10, { width: 60, align: 'right' });
-      doc.text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, col4, summaryTop + 10, { width: 60, align: 'right' });
+      doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#0f172a').lineWidth(1).stroke();
+      doc.fillColor('#0f172a').fontSize(11).font('Helvetica-Bold');
+      doc.text('Total', summaryCol1, summaryTop + 10, { width: 90, align: 'right' });
+      doc.text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, summaryCol2, summaryTop + 10, { width: 70, align: 'right' });
       
-      // Payment - bottom
-      const bankTop = summaryTop + 60;
+      // Payment
+      const bankTop = summaryTop + 50;
       doc.fillColor('#94a3b8').fontSize(9).font('Helvetica').text('PAYMENT DETAILS', margin, bankTop);
       doc.fillColor('#475569').fontSize(10);
-      doc.text(`IBAN: ${fromInfo.iban || 'N/A'}`, margin, bankTop + 15);
-      doc.text(`SWIFT: ${fromInfo.swift || 'N/A'}`, margin, bankTop + 28);
+      doc.text(`IBAN: ${sanitize(fromInfo.iban) || 'N/A'}`, margin, bankTop + 16);
+      doc.text(`SWIFT: ${sanitize(fromInfo.swift) || 'N/A'}`, margin, bankTop + 32);
+      
+      // 30-day notice
+      doc.fillColor('#94a3b8').fontSize(9)
+         .text('We kindly ask this invoice to be paid within 30 days, mentioning the invoice number.', margin, bankTop + 52, { width: 350 });
     }
     
     // ========================================
-    // TEMPLATE: PROFESSIONAL (Accent color sidebar)
+    // TEMPLATE: PROFESSIONAL (Green accent)
     // ========================================
     else if (template === 'professional') {
       // Left accent bar
-      doc.rect(0, 0, 8, pageHeight).fill('#059669');
+      doc.rect(0, 0, 6, pageHeight).fill('#059669');
       
       // Header
-      doc.fontSize(24).font('Helvetica-Bold').fillColor('#0f172a').text(fromInfo.company, margin + 10, 50);
-      doc.fontSize(10).fillColor('#64748b').font('Helvetica').text(fromInfo.address || '', margin + 10, 80, { width: 250 });
-      doc.text(`VAT: ${fromInfo.vat || 'N/A'}`, margin + 10, 100);
+      doc.fontSize(22).font('Helvetica-Bold').fillColor('#0f172a')
+         .text(sanitize(fromInfo.company), margin + 10, 45);
+      doc.fontSize(10).fillColor('#64748b').font('Helvetica')
+         .text(sanitize(fromInfo.address) || '', margin + 10, 72, { width: 250, lineGap: 4 });
+      if (fromInfo.vat) doc.text(`VAT: ${sanitize(fromInfo.vat)}`, margin + 10, 96);
       
-      // Invoice info box - right side
-      doc.roundedRect(pageWidth - 200, 45, 150, 70, 5).fill('#f0fdf4');
-      doc.fillColor('#059669').fontSize(20).font('Helvetica-Bold').text('INVOICE', pageWidth - 190, 55, { width: 130, align: 'center' });
-      doc.fillColor('#0f172a').fontSize(11).font('Helvetica').text(invoice.invoice_number, pageWidth - 190, 80, { width: 130, align: 'center' });
-      doc.fillColor('#64748b').fontSize(9).text(invoiceDate, pageWidth - 190, 97, { width: 130, align: 'center' });
+      // Invoice box
+      doc.roundedRect(pageWidth - 175, 40, 125, 60, 5).fill('#ecfdf5');
+      doc.fillColor('#059669').fontSize(18).font('Helvetica-Bold').text('INVOICE', pageWidth - 165, 50, { width: 105, align: 'center' });
+      doc.fillColor('#0f172a').fontSize(10).font('Helvetica').text(sanitize(invoice.invoice_number), pageWidth - 165, 72, { width: 105, align: 'center' });
+      doc.fillColor('#64748b').fontSize(9).text(invoiceDate, pageWidth - 165, 86, { width: 105, align: 'center' });
       
-      // Bill To section
-      let yPos = 150;
+      // Bill To with proper spacing
+      let yPos = 130;
       doc.fillColor('#059669').fontSize(10).font('Helvetica-Bold').text('BILL TO', margin + 10, yPos);
-      doc.moveTo(margin + 10, yPos + 14).lineTo(margin + 60, yPos + 14).strokeColor('#059669').lineWidth(2).stroke();
-      yPos += 25;
-      doc.fillColor('#0f172a').fontSize(12).font('Helvetica-Bold').text(toInfo.company, margin + 10, yPos);
+      doc.moveTo(margin + 10, yPos + 13).lineTo(margin + 60, yPos + 13).strokeColor('#059669').lineWidth(2).stroke();
+      yPos += 24;
+      doc.fillColor('#0f172a').fontSize(11).font('Helvetica-Bold').text(sanitize(toInfo.company), margin + 10, yPos);
       yPos += 16;
-      doc.fillColor('#475569').fontSize(10).font('Helvetica').text(toInfo.name, margin + 10, yPos);
+      doc.fillColor('#475569').fontSize(10).font('Helvetica').text(sanitize(toInfo.name), margin + 10, yPos);
       yPos += 14;
-      doc.text(toInfo.address || '', margin + 10, yPos, { width: 250 });
-      yPos += 20;
-      doc.text(`VAT: ${toInfo.vat || 'N/A'}`, margin + 10, yPos);
+      doc.text(sanitize(toInfo.address) || '', margin + 10, yPos, { width: 250, lineGap: 4 });
+      yPos += 22;
+      if (toInfo.vat) doc.text(`VAT: ${sanitize(toInfo.vat)}`, margin + 10, yPos);
       
       // Table
-      const tableTop = 290;
-      const col1 = margin + 10, col2 = margin + 50, col3 = margin + 290, col4 = margin + 360, col5 = margin + 435;
+      const tableTop = 260;
+      const col1 = margin + 10, col2 = margin + 45, col3 = margin + 280, col4 = margin + 345, col5 = margin + 415;
       
-      // Table header with accent
-      doc.rect(margin, tableTop - 5, pageWidth - margin - 50, 28).fill('#059669');
+      doc.rect(margin, tableTop - 5, pageWidth - margin - 50, 26).fill('#059669');
       doc.fillColor('#ffffff').fontSize(9).font('Helvetica-Bold');
-      doc.text('No.', col1, tableTop + 3);
-      doc.text('Service Description', col2, tableTop + 3);
-      doc.text('Days', col3, tableTop + 3, { width: 50, align: 'right' });
-      doc.text('Unit Price', col4, tableTop + 3, { width: 60, align: 'right' });
-      doc.text('Total', col5, tableTop + 3, { width: 55, align: 'right' });
+      doc.text('No.', col1, tableTop + 2);
+      doc.text('Service Description', col2, tableTop + 2);
+      doc.text('Days', col3, tableTop + 2, { width: 45, align: 'right' });
+      doc.text('Rate', col4, tableTop + 2, { width: 50, align: 'right' });
+      doc.text('Amount', col5, tableTop + 2, { width: 65, align: 'right' });
       
-      // Table row
-      const rowTop = tableTop + 35;
+      const rowTop = tableTop + 32;
       doc.fillColor('#0f172a').fontSize(10).font('Helvetica');
       doc.text('01', col1, rowTop);
       if (invoice.invoice_type === 'client') {
-        doc.font('Helvetica-Bold').text(`IT Services / ${invoice.consultant_first_name} ${invoice.consultant_last_name}`, col2, rowTop);
-        doc.font('Helvetica').fillColor('#64748b').fontSize(9);
-        doc.text(`${periodMonth} | Contract: ${invoice.client_contract_id || 'N/A'}`, col2, rowTop + 14);
+        doc.font('Helvetica-Bold').text(`IT Services - ${sanitize(invoice.consultant_first_name)} ${sanitize(invoice.consultant_last_name)}`, col2, rowTop);
+        doc.font('Helvetica').fillColor('#64748b').fontSize(9)
+           .text(`${periodMonth} | Contract: ${sanitize(invoice.client_contract_id) || 'N/A'}`, col2, rowTop + 13);
       } else {
         doc.font('Helvetica-Bold').text(`IT Services - ${periodMonth}`, col2, rowTop);
-        doc.font('Helvetica').fillColor('#64748b').fontSize(9);
-        doc.text(`Contract: ${invoice.consultant_contract_id || 'N/A'}`, col2, rowTop + 14);
+        doc.font('Helvetica').fillColor('#64748b').fontSize(9)
+           .text(`Contract: ${sanitize(invoice.consultant_contract_id) || 'N/A'}`, col2, rowTop + 13);
       }
       doc.fillColor('#0f172a').fontSize(10).font('Helvetica');
-      doc.text(invoice.days_worked.toString(), col3, rowTop, { width: 50, align: 'right' });
-      doc.text(`€${parseFloat(invoice.daily_rate).toFixed(2)}`, col4, rowTop, { width: 60, align: 'right' });
-      doc.font('Helvetica-Bold').text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col5, rowTop, { width: 55, align: 'right' });
+      doc.text(invoice.days_worked.toString(), col3, rowTop, { width: 45, align: 'right' });
+      doc.text(`€${parseFloat(invoice.daily_rate).toFixed(2)}`, col4, rowTop, { width: 50, align: 'right' });
+      doc.font('Helvetica-Bold').text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col5, rowTop, { width: 65, align: 'right' });
       
-      // Totals section
-      let summaryTop = rowTop + 60;
-      doc.moveTo(col3, summaryTop - 5).lineTo(pageWidth - margin, summaryTop - 5).strokeColor('#e2e8f0').lineWidth(1).stroke();
+      // Totals - MOVED LEFT
+      let summaryTop = rowTop + 50;
+      const summaryCol1 = margin + 250;
+      const summaryCol2 = margin + 365;
+      
+      doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#e2e8f0').lineWidth(1).stroke();
+      summaryTop += 12;
       
       if (invoice.vat_enabled) {
         doc.fillColor('#64748b').fontSize(10).font('Helvetica');
-        doc.text('Subtotal:', col4, summaryTop + 5, { width: 60, align: 'right' });
-        doc.fillColor('#0f172a').text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col5, summaryTop + 5, { width: 55, align: 'right' });
+        doc.text('Subtotal:', summaryCol1, summaryTop, { width: 95, align: 'right' });
+        doc.fillColor('#0f172a').text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, summaryCol2, summaryTop, { width: 70, align: 'right' });
+        summaryTop += 16;
+        doc.fillColor('#64748b').text(`VAT (${parseFloat(invoice.vat_rate).toFixed(0)}%):`, summaryCol1, summaryTop, { width: 95, align: 'right' });
+        doc.fillColor('#0f172a').text(`€${parseFloat(invoice.vat_amount).toFixed(2)}`, summaryCol2, summaryTop, { width: 70, align: 'right' });
         summaryTop += 20;
-        doc.fillColor('#64748b').text(`VAT (${parseFloat(invoice.vat_rate).toFixed(0)}%):`, col4, summaryTop, { width: 60, align: 'right' });
-        doc.fillColor('#0f172a').text(`€${parseFloat(invoice.vat_amount).toFixed(2)}`, col5, summaryTop, { width: 55, align: 'right' });
-        summaryTop += 25;
       }
       
-      // Total with accent
-      doc.rect(col4 - 30, summaryTop - 5, 160, 30).fill('#059669');
-      doc.fillColor('#ffffff').fontSize(11).font('Helvetica-Bold');
-      doc.text('TOTAL DUE:', col4, summaryTop + 3, { width: 60, align: 'right' });
-      doc.fontSize(13).text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, col5, summaryTop + 2, { width: 55, align: 'right' });
+      // Total with accent - MOVED LEFT
+      doc.rect(summaryCol1 - 15, summaryTop - 3, 180, 28).fill('#059669');
+      doc.fillColor('#ffffff').fontSize(10).font('Helvetica-Bold');
+      doc.text('TOTAL DUE:', summaryCol1, summaryTop + 4, { width: 95, align: 'right' });
+      doc.fontSize(12).text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, summaryCol2, summaryTop + 3, { width: 70, align: 'right' });
       
-      // Payment details
-      const bankTop = summaryTop + 60;
-      doc.rect(margin, bankTop - 10, 250, 70).fill('#f0fdf4');
-      doc.fillColor('#059669').fontSize(10).font('Helvetica-Bold').text('Payment Information', margin + 15, bankTop);
+      // Payment with proper spacing
+      const bankTop = summaryTop + 50;
+      doc.roundedRect(margin, bankTop - 8, 260, 85, 5).fill('#ecfdf5');
+      doc.fillColor('#059669').fontSize(10).font('Helvetica-Bold').text('Payment Information', margin + 12, bankTop);
       doc.fillColor('#475569').fontSize(10).font('Helvetica');
-      doc.text(`IBAN: ${fromInfo.iban || 'N/A'}`, margin + 15, bankTop + 20);
-      doc.text(`SWIFT: ${fromInfo.swift || 'N/A'}`, margin + 15, bankTop + 35);
-    }
-    
-    // ========================================
-    // TEMPLATE: CLASSIC (Default - improved)
-    // ========================================
-    else {
-      doc.fontSize(20).font('Helvetica-Bold').fillColor('#0f172a').text(fromInfo.company, margin, 50);
-      const leftCol = margin;
-      const rightCol = pageWidth / 2 + 20;
-      let yPos = 100;
-
-      doc.fontSize(12).font('Helvetica-Bold').fillColor('#475569').text('TO:', leftCol, yPos);
-      yPos += 20;
-      doc.fontSize(10).font('Helvetica').fillColor('#0f172a');
-      doc.text(toInfo.name, leftCol, yPos);
-      yPos += 15;
-      doc.text(toInfo.company, leftCol, yPos, { width: 220 });
-      yPos += 15;
-      doc.fillColor('#64748b').text(toInfo.address || '', leftCol, yPos, { width: 220 });
-      yPos += 20;
-      doc.text(`VAT: ${toInfo.vat || 'N/A'}`, leftCol, yPos);
-
-      let fromYPos = 100;
-      doc.fillColor('#475569').fontSize(12).font('Helvetica-Bold').text('FROM:', rightCol, fromYPos);
-      fromYPos += 20;
-      doc.fontSize(10).font('Helvetica').fillColor('#0f172a');
-      doc.text(fromInfo.company, rightCol, fromYPos, { width: 220 });
-      fromYPos += 15;
-      doc.fillColor('#64748b').text(fromInfo.address || '', rightCol, fromYPos, { width: 220 });
-      fromYPos += 20;
-      doc.text(`VAT: ${fromInfo.vat || 'N/A'}`, rightCol, fromYPos);
-
-      doc.fontSize(16).font('Helvetica-Bold').fillColor('#0f172a').text(`INVOICE No. ${invoice.invoice_number}`, margin, 240, { align: 'center', width: pageWidth - (margin * 2) });
-      doc.fontSize(12).font('Helvetica').fillColor('#64748b').text(`Date: ${invoiceDate}`, margin, 265, { align: 'center', width: pageWidth - (margin * 2) });
-
-      const tableTop = 310;
-      const col1 = margin, col2 = margin + 50, col3 = margin + 250, col4 = margin + 330, col5 = margin + 410;
-
-      doc.fontSize(10).font('Helvetica-Bold').fillColor('#475569');
-      doc.text('No.', col1, tableTop);
-      doc.text('Article / Description', col2, tableTop);
-      doc.text('Days', col3, tableTop, { width: 60, align: 'right' });
-      doc.text('Unit price', col4, tableTop, { width: 70, align: 'right' });
-      doc.text('Total', col5, tableTop, { width: 70, align: 'right' });
-      doc.moveTo(margin, tableTop + 15).lineTo(pageWidth - margin, tableTop + 15).strokeColor('#e2e8f0').stroke();
-
-      const rowTop = tableTop + 25;
-      doc.fontSize(9).font('Helvetica').fillColor('#0f172a');
-      doc.text('1', col1, rowTop);
-
-      if (invoice.invoice_type === 'client') {
-        doc.text(`IT Services/${invoice.consultant_first_name} ${invoice.consultant_last_name} - ${periodMonth}`, col2, rowTop, { width: 230 });
-        doc.fillColor('#64748b').text(`Contract: ${invoice.client_contract_id || 'N/A'}`, col2, rowTop + 12, { width: 230, fontSize: 8 });
-      } else {
-        doc.text(`IT Services - ${periodMonth}`, col2, rowTop, { width: 230 });
-        doc.fillColor('#64748b').text(`Contract: ${invoice.consultant_contract_id || 'N/A'}`, col2, rowTop + 12, { width: 230, fontSize: 8 });
-      }
-      doc.fillColor('#0f172a');
-      doc.text(invoice.days_worked.toString(), col3, rowTop, { width: 60, align: 'right' });
-      doc.text(`€${parseFloat(invoice.daily_rate).toFixed(2)}`, col4, rowTop, { width: 70, align: 'right' });
-      doc.text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col5, rowTop, { width: 70, align: 'right' });
-
-      let summaryTop = rowTop + 50;
-      if (invoice.vat_enabled) {
-        doc.fontSize(10).font('Helvetica').fillColor('#64748b');
-        doc.text(`VAT ${parseFloat(invoice.vat_rate).toFixed(0)}%`, col4, summaryTop, { width: 70, align: 'right' });
-        doc.fillColor('#0f172a').text(`€${parseFloat(invoice.vat_amount).toFixed(2)}`, col5, summaryTop, { width: 70, align: 'right' });
-        summaryTop += 25;
-      }
-
-      doc.moveTo(col4, summaryTop - 5).lineTo(pageWidth - margin, summaryTop - 5).strokeColor('#e2e8f0').stroke();
-      summaryTop += 10;
-      doc.fontSize(11).font('Helvetica-Bold').fillColor('#0f172a');
-      doc.text('Total amount:', col4, summaryTop, { width: 70, align: 'right' });
-      doc.text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, col5, summaryTop, { width: 70, align: 'right' });
-
-      const bankTop = summaryTop + 60;
-      doc.fontSize(10).font('Helvetica-Bold').fillColor('#475569').text('Please pay to:', margin, bankTop);
-      doc.fontSize(9).font('Helvetica').fillColor('#0f172a');
-      doc.text(`IBAN: ${fromInfo.iban || 'N/A'}`, margin, bankTop + 20);
-      doc.text(`SWIFT: ${fromInfo.swift || 'N/A'}`, margin, bankTop + 35);
+      doc.text(`IBAN: ${sanitize(fromInfo.iban) || 'N/A'}`, margin + 12, bankTop + 20);
+      doc.text(`SWIFT: ${sanitize(fromInfo.swift) || 'N/A'}`, margin + 12, bankTop + 36);
+      
+      // 30-day notice
+      doc.fillColor('#64748b').fontSize(9)
+         .text('We kindly ask this invoice to be paid within 30 days,', margin + 12, bankTop + 56);
+      doc.text('mentioning the invoice number.', margin + 12, bankTop + 68);
     }
 
     doc.end();
