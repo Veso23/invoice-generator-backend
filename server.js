@@ -2155,7 +2155,7 @@ app.get('/api/company/settings', authenticateToken, checkCompanyAccess, async (r
   try {
     const result = await pool.query(
       `SELECT id, name, address, representative_name, timesheet_deadline_day, 
-              company_vat, company_email, default_vat_rate, 
+              company_vat, company_email, timesheet_email, default_vat_rate, 
               bank_name, bank_iban, bank_swift, bank_address,
               smtp_host, smtp_port, smtp_username, smtp_password,
               smtp_from_email, smtp_from_name, smtp_secure,
