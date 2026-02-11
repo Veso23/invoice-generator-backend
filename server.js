@@ -2560,7 +2560,7 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     const invoiceDate = new Date(invoice.period_to).toLocaleDateString('en-GB');
     const periodMonth = new Date(invoice.period_to).toLocaleDateString('en-US', { month: 'long' });
 
-    // Helper function to sanitize text (remove problematic characters)
+    // Helper function to sanitize text
     const sanitize = (text) => {
       if (!text) return '';
       return text.toString()
@@ -2573,28 +2573,23 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     // TEMPLATE: MODERN (Blue header)
     // ========================================
     if (template === 'modern') {
-      // Header background
       doc.rect(0, 0, pageWidth, 120).fill('#1e40af');
       
-      // Company name in header
       doc.fontSize(24).font('Helvetica-Bold').fillColor('#ffffff')
          .text(sanitize(fromInfo.company), margin, 40, { width: pageWidth - 200 });
       
-      // Invoice label and number
       doc.roundedRect(pageWidth - 180, 35, 130, 45, 6).fill('#3b82f6');
       doc.fontSize(9).fillColor('#ffffff').font('Helvetica')
          .text('INVOICE', pageWidth - 170, 43, { width: 110, align: 'center' });
       doc.fontSize(11).font('Helvetica-Bold')
          .text(sanitize(invoice.invoice_number), pageWidth - 170, 58, { width: 110, align: 'center' });
       
-      // Issue Date
       doc.fillColor('#64748b').fontSize(10).font('Helvetica')
          .text(`Issue Date: ${invoiceDate}`, margin, 135);
       
       const leftCol = margin;
       const rightCol = pageWidth / 2 + 20;
       
-      // BILL TO Section
       let billY = 165;
       doc.roundedRect(leftCol - 10, billY - 8, 230, 105, 6).fill('#f8fafc');
       doc.fillColor('#1e40af').fontSize(9).font('Helvetica-Bold').text('BILL TO', leftCol, billY);
@@ -2611,7 +2606,6 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
         doc.fillColor('#64748b').text(`VAT: ${sanitize(toInfo.vat)}`, leftCol, billY);
       }
       
-      // FROM Section
       let fromY = 165;
       doc.roundedRect(rightCol - 10, fromY - 8, 230, 105, 6).fill('#f8fafc');
       doc.fillColor('#1e40af').fontSize(9).font('Helvetica-Bold').text('FROM', rightCol, fromY);
@@ -2626,15 +2620,9 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
         doc.fillColor('#64748b').text(`VAT: ${sanitize(fromInfo.vat)}`, rightCol, fromY);
       }
       
-      // Table
       const tableTop = 295;
-      const col1 = margin;
-      const col2 = margin + 35;
-      const col3 = margin + 280;
-      const col4 = margin + 340;
-      const col5 = margin + 410;
+      const col1 = margin, col2 = margin + 35, col3 = margin + 280, col4 = margin + 340, col5 = margin + 410;
       
-      // Table header
       doc.rect(margin - 5, tableTop - 8, pageWidth - 90, 28).fill('#1e40af');
       doc.fillColor('#ffffff').fontSize(9).font('Helvetica-Bold');
       doc.text('#', col1, tableTop);
@@ -2643,7 +2631,6 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       doc.text('Rate', col4, tableTop, { width: 50, align: 'right' });
       doc.text('Amount', col5, tableTop, { width: 70, align: 'right' });
       
-      // Table row
       const rowTop = tableTop + 32;
       doc.fillColor('#0f172a').fontSize(10).font('Helvetica');
       doc.text('1', col1, rowTop);
@@ -2665,10 +2652,9 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       doc.text(`€${parseFloat(invoice.daily_rate).toFixed(2)}`, col4, rowTop, { width: 50, align: 'right' });
       doc.text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col5, rowTop, { width: 70, align: 'right' });
       
-      // Totals section - MOVED LEFT
       let summaryTop = rowTop + 50;
-      const summaryCol1 = margin + 260;  // Moved left
-      const summaryCol2 = margin + 380;  // Moved left
+      const summaryCol1 = margin + 280;
+      const summaryCol2 = margin + 400;
       
       doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#e2e8f0').lineWidth(1).stroke();
       summaryTop += 12;
@@ -2684,15 +2670,14 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
         summaryTop += 22;
       }
       
-      // Total box - centered better
-      doc.roundedRect(summaryCol1 + 5, summaryTop - 5, 165, 32, 5).fill('#1e40af');
-      doc.fillColor('#ffffff').fontSize(10).font('Helvetica')
-         .text('TOTAL:', summaryCol1 + 15, summaryTop + 4, { width: 85, align: 'right' });
-      doc.fontSize(13).font('Helvetica-Bold')
-         .text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, summaryCol2 - 10, summaryTop + 2, { width: 70, align: 'right' });
+      // Total - NO BOX, bold black text with line
+      doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#1e40af').lineWidth(2).stroke();
+      summaryTop += 12;
+      doc.fillColor('#0f172a').fontSize(12).font('Helvetica-Bold');
+      doc.text('TOTAL:', summaryCol1, summaryTop, { width: 100, align: 'right' });
+      doc.fontSize(14).text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, summaryCol2, summaryTop - 1, { width: 70, align: 'right' });
       
-      // Payment Details section
-      const bankTop = summaryTop + 55;
+      const bankTop = summaryTop + 45;
       doc.fillColor('#1e40af').fontSize(11).font('Helvetica-Bold').text('Payment Details', margin, bankTop);
       doc.moveTo(margin, bankTop + 14).lineTo(margin + 120, bankTop + 14).strokeColor('#1e40af').lineWidth(2).stroke();
       
@@ -2700,20 +2685,17 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       doc.text(`IBAN: ${sanitize(fromInfo.iban) || 'N/A'}`, margin, bankTop + 26);
       doc.text(`SWIFT: ${sanitize(fromInfo.swift) || 'N/A'}`, margin, bankTop + 42);
       
-      // 30-day payment notice
       doc.fillColor('#64748b').fontSize(9).font('Helvetica')
          .text('We kindly ask this invoice to be paid within 30 days, mentioning the invoice number.', margin, bankTop + 62, { width: 350 });
       
-      // Footer
       doc.fillColor('#94a3b8').fontSize(9).font('Helvetica')
          .text('Thank you for your business!', 0, pageHeight - 50, { align: 'center', width: pageWidth });
     }
     
     // ========================================
-    // TEMPLATE: CLASSIC (Default)
+    // TEMPLATE: CLASSIC - FIXED SPACING
     // ========================================
     else if (template === 'classic' || !template) {
-      // Company header
       doc.fontSize(20).font('Helvetica-Bold').fillColor('#0f172a')
          .text(sanitize(fromInfo.company), margin, 50);
       
@@ -2723,14 +2705,17 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       // BILL TO
       let yPos = 100;
       doc.fontSize(11).font('Helvetica-Bold').fillColor('#475569').text('BILL TO', leftCol, yPos);
-      yPos += 18;
+      yPos += 20;
       doc.fontSize(10).font('Helvetica').fillColor('#0f172a');
       doc.text(sanitize(toInfo.company), leftCol, yPos, { width: 220 });
       yPos += 16;
       doc.text(sanitize(toInfo.name), leftCol, yPos);
       yPos += 16;
-      doc.fillColor('#64748b').text(sanitize(toInfo.address) || '', leftCol, yPos, { width: 220, lineGap: 4 });
-      yPos += 22;
+      const toAddress = sanitize(toInfo.address) || '';
+      doc.fillColor('#64748b');
+      const toAddressHeight = doc.heightOfString(toAddress, { width: 220 });
+      doc.text(toAddress, leftCol, yPos, { width: 220 });
+      yPos += toAddressHeight + 10;
       if (toInfo.vat) {
         doc.text(`VAT: ${sanitize(toInfo.vat)}`, leftCol, yPos);
       }
@@ -2738,24 +2723,28 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       // FROM
       let fromYPos = 100;
       doc.fillColor('#475569').fontSize(11).font('Helvetica-Bold').text('FROM', rightCol, fromYPos);
-      fromYPos += 18;
+      fromYPos += 20;
       doc.fontSize(10).font('Helvetica').fillColor('#0f172a');
       doc.text(sanitize(fromInfo.company), rightCol, fromYPos, { width: 220 });
       fromYPos += 16;
-      doc.fillColor('#64748b').text(sanitize(fromInfo.address) || '', rightCol, fromYPos, { width: 220, lineGap: 4 });
-      fromYPos += 22;
+      const fromAddress = sanitize(fromInfo.address) || '';
+      doc.fillColor('#64748b');
+      const fromAddressHeight = doc.heightOfString(fromAddress, { width: 220 });
+      doc.text(fromAddress, rightCol, fromYPos, { width: 220 });
+      fromYPos += fromAddressHeight + 10;
       if (fromInfo.vat) {
         doc.text(`VAT: ${sanitize(fromInfo.vat)}`, rightCol, fromYPos);
       }
 
-      // Invoice title
+      // Invoice title - dynamic position
+      const titleY = Math.max(yPos, fromYPos) + 30;
       doc.fontSize(16).font('Helvetica-Bold').fillColor('#0f172a')
-         .text(`INVOICE ${invoice.invoice_number}`, margin, 230, { align: 'center', width: pageWidth - (margin * 2) });
+         .text(`INVOICE ${invoice.invoice_number}`, margin, titleY, { align: 'center', width: pageWidth - (margin * 2) });
       doc.fontSize(11).font('Helvetica').fillColor('#64748b')
-         .text(`Date: ${invoiceDate}`, margin, 252, { align: 'center', width: pageWidth - (margin * 2) });
+         .text(`Date: ${invoiceDate}`, margin, titleY + 22, { align: 'center', width: pageWidth - (margin * 2) });
 
       // Table
-      const tableTop = 290;
+      const tableTop = titleY + 60;
       const col1 = margin, col2 = margin + 40, col3 = margin + 280, col4 = margin + 350, col5 = margin + 430;
 
       doc.fontSize(10).font('Helvetica-Bold').fillColor('#475569');
@@ -2783,10 +2772,9 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       doc.text(`€${parseFloat(invoice.daily_rate).toFixed(2)}`, col4, rowTop, { width: 60, align: 'right' });
       doc.text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col5, rowTop, { width: 60, align: 'right' });
 
-      // Totals - MOVED LEFT
       let summaryTop = rowTop + 45;
-      const summaryCol1 = margin + 280;
-      const summaryCol2 = margin + 380;
+      const summaryCol1 = margin + 300;
+      const summaryCol2 = margin + 400;
       
       if (invoice.vat_enabled) {
         doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#e2e8f0').stroke();
@@ -2802,24 +2790,22 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
         summaryTop += 20;
       }
 
-      doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#475569').lineWidth(1).stroke();
+      // Total - NO BOX, bold black
+      doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#0f172a').lineWidth(1.5).stroke();
       summaryTop += 12;
-      doc.fontSize(11).font('Helvetica-Bold').fillColor('#0f172a');
+      doc.fontSize(12).font('Helvetica-Bold').fillColor('#0f172a');
       doc.text('Total:', summaryCol1, summaryTop, { width: 80, align: 'right' });
-      doc.text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, summaryCol2, summaryTop, { width: 70, align: 'right' });
+      doc.fontSize(13).text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, summaryCol2, summaryTop - 1, { width: 70, align: 'right' });
 
-      // Payment section
-      const bankTop = summaryTop + 50;
+      const bankTop = summaryTop + 45;
       doc.fontSize(10).font('Helvetica-Bold').fillColor('#475569').text('Payment Details', margin, bankTop);
       doc.fontSize(10).font('Helvetica').fillColor('#0f172a');
       doc.text(`IBAN: ${sanitize(fromInfo.iban) || 'N/A'}`, margin, bankTop + 18);
       doc.text(`SWIFT: ${sanitize(fromInfo.swift) || 'N/A'}`, margin, bankTop + 34);
       
-      // 30-day payment notice
       doc.fillColor('#64748b').fontSize(9)
          .text('We kindly ask this invoice to be paid within 30 days, mentioning the invoice number.', margin, bankTop + 56, { width: 350 });
       
-      // Footer
       doc.fillColor('#94a3b8').fontSize(9)
          .text('Thank you for your business!', 0, pageHeight - 50, { align: 'center', width: pageWidth });
     }
@@ -2828,10 +2814,8 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     // TEMPLATE: MINIMAL
     // ========================================
     else if (template === 'minimal') {
-      // Header line
       doc.moveTo(margin, 40).lineTo(pageWidth - margin, 40).strokeColor('#0f172a').lineWidth(2).stroke();
       
-      // Company and invoice info
       doc.fontSize(18).font('Helvetica-Bold').fillColor('#0f172a')
          .text(sanitize(fromInfo.company), margin, 55);
       doc.fontSize(11).font('Helvetica').fillColor('#64748b')
@@ -2840,7 +2824,6 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       
       doc.moveTo(margin, 100).lineTo(pageWidth - margin, 100).strokeColor('#e2e8f0').lineWidth(1).stroke();
       
-      // Addresses with proper spacing
       let yPos = 118;
       const leftCol = margin;
       const rightCol = pageWidth / 2 + 30;
@@ -2852,7 +2835,7 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       doc.fillColor('#475569').fontSize(10).font('Helvetica').text(sanitize(toInfo.name), leftCol, yPos);
       yPos += 14;
       doc.text(sanitize(toInfo.address) || '', leftCol, yPos, { width: 200, lineGap: 4 });
-      yPos += 20;
+      yPos += 24;
       if (toInfo.vat) doc.text(`VAT: ${sanitize(toInfo.vat)}`, leftCol, yPos);
       
       let fromY = 118;
@@ -2861,10 +2844,9 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       doc.fillColor('#0f172a').fontSize(11).font('Helvetica-Bold').text(sanitize(fromInfo.company), rightCol, fromY);
       fromY += 16;
       doc.fillColor('#475569').fontSize(10).font('Helvetica').text(sanitize(fromInfo.address) || '', rightCol, fromY, { width: 200, lineGap: 4 });
-      fromY += 20;
+      fromY += 24;
       if (fromInfo.vat) doc.text(`VAT: ${sanitize(fromInfo.vat)}`, rightCol, fromY);
       
-      // Table
       const tableTop = 230;
       doc.moveTo(margin, tableTop).lineTo(pageWidth - margin, tableTop).strokeColor('#0f172a').lineWidth(1).stroke();
       
@@ -2891,10 +2873,9 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       doc.text(`€${parseFloat(invoice.daily_rate).toFixed(2)}`, col3, rowTop, { width: 60, align: 'right' });
       doc.text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col4, rowTop, { width: 60, align: 'right' });
       
-      // Totals - MOVED LEFT
       let summaryTop = rowTop + 45;
-      const summaryCol1 = margin + 260;
-      const summaryCol2 = margin + 370;
+      const summaryCol1 = margin + 280;
+      const summaryCol2 = margin + 390;
       
       doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#e2e8f0').stroke();
       summaryTop += 12;
@@ -2906,19 +2887,19 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
         summaryTop += 20;
       }
       
-      doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#0f172a').lineWidth(1).stroke();
-      doc.fillColor('#0f172a').fontSize(11).font('Helvetica-Bold');
-      doc.text('Total', summaryCol1, summaryTop + 10, { width: 90, align: 'right' });
-      doc.text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, summaryCol2, summaryTop + 10, { width: 70, align: 'right' });
+      // Total - NO BOX, bold black
+      doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#0f172a').lineWidth(1.5).stroke();
+      summaryTop += 12;
+      doc.fillColor('#0f172a').fontSize(12).font('Helvetica-Bold');
+      doc.text('Total:', summaryCol1, summaryTop, { width: 90, align: 'right' });
+      doc.fontSize(13).text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, summaryCol2, summaryTop - 1, { width: 70, align: 'right' });
       
-      // Payment
-      const bankTop = summaryTop + 50;
+      const bankTop = summaryTop + 45;
       doc.fillColor('#94a3b8').fontSize(9).font('Helvetica').text('PAYMENT DETAILS', margin, bankTop);
       doc.fillColor('#475569').fontSize(10);
       doc.text(`IBAN: ${sanitize(fromInfo.iban) || 'N/A'}`, margin, bankTop + 16);
       doc.text(`SWIFT: ${sanitize(fromInfo.swift) || 'N/A'}`, margin, bankTop + 32);
       
-      // 30-day notice
       doc.fillColor('#94a3b8').fontSize(9)
          .text('We kindly ask this invoice to be paid within 30 days, mentioning the invoice number.', margin, bankTop + 52, { width: 350 });
     }
@@ -2927,23 +2908,19 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     // TEMPLATE: PROFESSIONAL (Green accent)
     // ========================================
     else if (template === 'professional') {
-      // Left accent bar
       doc.rect(0, 0, 6, pageHeight).fill('#059669');
       
-      // Header
       doc.fontSize(22).font('Helvetica-Bold').fillColor('#0f172a')
          .text(sanitize(fromInfo.company), margin + 10, 45);
       doc.fontSize(10).fillColor('#64748b').font('Helvetica')
          .text(sanitize(fromInfo.address) || '', margin + 10, 72, { width: 250, lineGap: 4 });
-      if (fromInfo.vat) doc.text(`VAT: ${sanitize(fromInfo.vat)}`, margin + 10, 96);
+      if (fromInfo.vat) doc.text(`VAT: ${sanitize(fromInfo.vat)}`, margin + 10, 100);
       
-      // Invoice box - taller to fit content
       doc.roundedRect(pageWidth - 175, 40, 125, 75, 5).fill('#ecfdf5');
       doc.fillColor('#059669').fontSize(16).font('Helvetica-Bold').text('INVOICE', pageWidth - 165, 48, { width: 105, align: 'center' });
       doc.fillColor('#0f172a').fontSize(9).font('Helvetica').text(sanitize(invoice.invoice_number), pageWidth - 165, 70, { width: 105, align: 'center' });
       doc.fillColor('#64748b').fontSize(9).text(invoiceDate, pageWidth - 165, 95, { width: 105, align: 'center' });
       
-      // Bill To with proper spacing
       let yPos = 130;
       doc.fillColor('#059669').fontSize(10).font('Helvetica-Bold').text('BILL TO', margin + 10, yPos);
       doc.moveTo(margin + 10, yPos + 13).lineTo(margin + 60, yPos + 13).strokeColor('#059669').lineWidth(2).stroke();
@@ -2953,11 +2930,10 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       doc.fillColor('#475569').fontSize(10).font('Helvetica').text(sanitize(toInfo.name), margin + 10, yPos);
       yPos += 14;
       doc.text(sanitize(toInfo.address) || '', margin + 10, yPos, { width: 250, lineGap: 4 });
-      yPos += 22;
+      yPos += 26;
       if (toInfo.vat) doc.text(`VAT: ${sanitize(toInfo.vat)}`, margin + 10, yPos);
       
-      // Table
-      const tableTop = 260;
+      const tableTop = 265;
       const col1 = margin + 10, col2 = margin + 45, col3 = margin + 280, col4 = margin + 345, col5 = margin + 415;
       
       doc.rect(margin, tableTop - 5, pageWidth - margin - 50, 26).fill('#059669');
@@ -2985,10 +2961,9 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       doc.text(`€${parseFloat(invoice.daily_rate).toFixed(2)}`, col4, rowTop, { width: 50, align: 'right' });
       doc.font('Helvetica-Bold').text(`€${parseFloat(invoice.subtotal).toFixed(2)}`, col5, rowTop, { width: 65, align: 'right' });
       
-      // Totals - MOVED LEFT
       let summaryTop = rowTop + 50;
-      const summaryCol1 = margin + 250;
-      const summaryCol2 = margin + 365;
+      const summaryCol1 = margin + 270;
+      const summaryCol2 = margin + 385;
       
       doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#e2e8f0').lineWidth(1).stroke();
       summaryTop += 12;
@@ -3003,21 +2978,20 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
         summaryTop += 20;
       }
       
-      // Total with accent - centered better
-      doc.rect(summaryCol1, summaryTop - 3, 165, 28).fill('#059669');
-      doc.fillColor('#ffffff').fontSize(10).font('Helvetica-Bold');
-      doc.text('TOTAL DUE:', summaryCol1 + 10, summaryTop + 4, { width: 80, align: 'right' });
-      doc.fontSize(12).text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, summaryCol2 - 10, summaryTop + 3, { width: 70, align: 'right' });
+      // Total - NO BOX, bold black with green line
+      doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#059669').lineWidth(2).stroke();
+      summaryTop += 12;
+      doc.fillColor('#0f172a').fontSize(12).font('Helvetica-Bold');
+      doc.text('TOTAL DUE:', summaryCol1, summaryTop, { width: 95, align: 'right' });
+      doc.fontSize(14).text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, summaryCol2, summaryTop - 1, { width: 70, align: 'right' });
       
-      // Payment with proper spacing
-      const bankTop = summaryTop + 50;
+      const bankTop = summaryTop + 45;
       doc.roundedRect(margin, bankTop - 8, 260, 85, 5).fill('#ecfdf5');
       doc.fillColor('#059669').fontSize(10).font('Helvetica-Bold').text('Payment Information', margin + 12, bankTop);
       doc.fillColor('#475569').fontSize(10).font('Helvetica');
       doc.text(`IBAN: ${sanitize(fromInfo.iban) || 'N/A'}`, margin + 12, bankTop + 20);
       doc.text(`SWIFT: ${sanitize(fromInfo.swift) || 'N/A'}`, margin + 12, bankTop + 36);
       
-      // 30-day notice
       doc.fillColor('#64748b').fontSize(9)
          .text('We kindly ask this invoice to be paid within 30 days,', margin + 12, bankTop + 56);
       doc.text('mentioning the invoice number.', margin + 12, bankTop + 68);
