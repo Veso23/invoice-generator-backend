@@ -111,14 +111,30 @@ const sendInvoiceEmail = async (invoice, companySettings, recipientEmail, recipi
     throw new Error('Email settings not configured. Please configure SMTP in Company Settings.');
   }
 
-  // Create transporter
+// Create transporter with timeout and TLS options
+  const smtpPort = parseInt(companySettings.smtp_port) || 587;
+  const isSecure = smtpPort === 465; // Port 465 = SSL, 587 = STARTTLS
+  
+  console.log('📧 SMTP Config:', {
+    host: companySettings.smtp_host,
+    port: smtpPort,
+    secure: isSecure,
+    user: companySettings.smtp_username
+  });
+  
   const transporter = nodemailer.createTransport({
     host: companySettings.smtp_host,
-    port: companySettings.smtp_port || 587,
-    secure: companySettings.smtp_secure !== false, // true for 465, false for other ports
+    port: smtpPort,
+    secure: isSecure,
     auth: {
       user: companySettings.smtp_username,
       pass: companySettings.smtp_password
+    },
+    connectionTimeout: 10000, // 10 seconds
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
+    tls: {
+      rejectUnauthorized: false // Allow self-signed certificates (common on cPanel)
     }
   });
 
