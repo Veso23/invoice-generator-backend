@@ -223,13 +223,14 @@ const authenticateToken = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
-    const result = await pool.query('SELECT * FROM users WHERE id = $1', [decoded.userId]);
+    const result = await pool.query('SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL', [decoded.userId]);
     
     if (result.rows.length === 0) {
       return res.status(403).json({ error: 'Invalid token' });
     }
 
     req.user = result.rows[0];
+    req.userId = result.rows[0].id; // ✅ Add userId for soft delete tracking
     next();
   } catch (error) {
     console.error('Auth error:', error);
@@ -278,7 +279,7 @@ const checkDuplicates = async (pool, table, fields, excludeId = null, companyId 
   for (const { field, value, label } of fields) {
     if (!value || value.trim() === '') continue; // Skip empty values
     
-    let query = `SELECT id FROM ${table} WHERE LOWER(${field}) = LOWER($1)`;
+    let query = `SELECT id FROM ${table} WHERE LOWER(${field}) = LOWER($1) AND deleted_at IS NULL`;
     const params = [value.trim()];
     let paramIndex = 2;
     
@@ -339,8 +340,8 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'All fields are required' });
     }
 
-    // Check if user exists
-    const existingUser = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
+    // Check if user exists (including soft-deleted)
+    const existingUser = await pool.query('SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL', [email]);
     if (existingUser.rows.length > 0) {
       return res.status(400).json({ error: 'User already exists' });
     }
@@ -415,12 +416,12 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    // Find user with company name
+    // Find user with company name (exclude soft-deleted)
     const result = await pool.query(`
       SELECT u.*, c.name as company_name 
       FROM users u 
       LEFT JOIN companies c ON u.company_id = c.id 
-      WHERE u.email = $1
+      WHERE u.email = $1 AND u.deleted_at IS NULL
     `, [email]);
     const user = result.rows[0];
 
@@ -464,20 +465,38 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // =============================================
-// CONSULTANT ROUTES - FIXED WITH company_id
+// CONSULTANT ROUTES - WITH SOFT DELETE
 // =============================================
 
-// GET all consultants
+// GET all consultants (exclude soft-deleted)
 app.get('/api/consultants', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT * FROM consultants WHERE company_id = $1 ORDER BY created_at DESC',
+      'SELECT * FROM consultants WHERE company_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC',
       [req.companyId]
     );
     res.json(result.rows);
   } catch (error) {
     console.error('Get consultants error:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET deleted consultants (admin only)
+app.get('/api/consultants/deleted', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT c.*, u.email as deleted_by_email 
+       FROM consultants c 
+       LEFT JOIN users u ON c.deleted_by = u.id
+       WHERE c.company_id = $1 AND c.deleted_at IS NOT NULL 
+       ORDER BY c.deleted_at DESC`,
+      [req.companyId]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get deleted consultants error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -489,12 +508,12 @@ app.post('/api/consultants', authenticateToken, checkCompanyAccess, async (req, 
       phone, email, iban, swift, consultantContractId 
     } = req.body;
 
-    // Check for duplicates within the same company
+    // Check for duplicates within the same company (exclude soft-deleted)
     const duplicateErrors = await checkDuplicates(pool, 'consultants', [
       { field: 'company_vat', value: companyVat, label: 'Company VAT' },
       { field: 'email', value: email, label: 'Email' },
       { field: 'iban', value: iban, label: 'IBAN' }
-    ], null, req.companyId);  // ✅ Pass companyId for scoped duplicate check
+    ], null, req.companyId);
 
     if (duplicateErrors.length > 0) {
       return res.status(400).json({ 
@@ -590,9 +609,9 @@ app.put('/api/consultants/:id', authenticateToken, checkCompanyAccess, async (re
       phone, email, iban, swift, consultantContractId 
     } = req.body;
 
-    // Verify consultant belongs to company
+    // Verify consultant belongs to company (exclude soft-deleted)
     const checkResult = await pool.query(
-      'SELECT id FROM consultants WHERE id = $1 AND company_id = $2',
+      'SELECT id FROM consultants WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL',
       [id, req.companyId]
     );
 
@@ -605,7 +624,7 @@ app.put('/api/consultants/:id', authenticateToken, checkCompanyAccess, async (re
       { field: 'company_vat', value: companyVat, label: 'Company VAT' },
       { field: 'email', value: email, label: 'Email' },
       { field: 'iban', value: iban, label: 'IBAN' }
-    ], id, req.companyId);  // ✅ Pass both excludeId and companyId
+    ], id, req.companyId);
 
     if (duplicateErrors.length > 0) {
       return res.status(400).json({ 
@@ -619,7 +638,7 @@ app.put('/api/consultants/:id', authenticateToken, checkCompanyAccess, async (re
       `UPDATE consultants 
        SET first_name = $1, last_name = $2, company_name = $3, company_address = $4, 
            company_vat = $5, phone = $6, email = $7, iban = $8, swift = $9, consultant_contract_id = $10
-       WHERE id = $11 AND company_id = $12 RETURNING *`,
+       WHERE id = $11 AND company_id = $12 AND deleted_at IS NULL RETURNING *`,
       [firstName, lastName, companyName, companyAddress, companyVat, phone, email, iban, swift, consultantContractId, id, req.companyId]
     );
     
@@ -636,14 +655,14 @@ app.put('/api/consultants/:id', authenticateToken, checkCompanyAccess, async (re
   }
 });
 
-// DELETE consultant
+// DELETE consultant (SOFT DELETE)
 app.delete('/api/consultants/:id', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Verify consultant belongs to company
+    // Verify consultant belongs to company (exclude already soft-deleted)
     const checkResult = await pool.query(
-      'SELECT id FROM consultants WHERE id = $1 AND company_id = $2',
+      'SELECT id FROM consultants WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL',
       [id, req.companyId]
     );
 
@@ -651,9 +670,9 @@ app.delete('/api/consultants/:id', authenticateToken, checkCompanyAccess, async 
       return res.status(404).json({ error: 'Consultant not found' });
     }
 
-    // Check if consultant has contracts
+    // Check if consultant has active contracts (exclude soft-deleted contracts)
     const contractCheck = await pool.query(
-      'SELECT COUNT(*) as count FROM contracts WHERE consultant_id = $1',
+      'SELECT COUNT(*) as count FROM contracts WHERE consultant_id = $1 AND deleted_at IS NULL',
       [id]
     );
 
@@ -663,7 +682,11 @@ app.delete('/api/consultants/:id', authenticateToken, checkCompanyAccess, async 
       });
     }
 
-    await pool.query('DELETE FROM consultants WHERE id = $1 AND company_id = $2', [id, req.companyId]);
+    // ✅ SOFT DELETE instead of hard delete
+    await pool.query(
+      'UPDATE consultants SET deleted_at = NOW(), deleted_by = $1 WHERE id = $2 AND company_id = $3',
+      [req.userId, id, req.companyId]
+    );
     res.json({ message: 'Consultant deleted successfully' });
   } catch (error) {
     console.error('Delete consultant error:', error);
@@ -671,21 +694,54 @@ app.delete('/api/consultants/:id', authenticateToken, checkCompanyAccess, async 
   }
 });
 
+// Restore deleted consultant (admin only)
+app.post('/api/consultants/:id/restore', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query(
+      'UPDATE consultants SET deleted_at = NULL, deleted_by = NULL WHERE id = $1 AND company_id = $2',
+      [id, req.companyId]
+    );
+    res.json({ message: 'Consultant restored successfully' });
+  } catch (error) {
+    console.error('Restore consultant error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // =============================================
-// CLIENT ROUTES - FIXED WITH company_id
+// CLIENT ROUTES - WITH SOFT DELETE
 // =============================================
 
-// GET all clients
+// GET all clients (exclude soft-deleted)
 app.get('/api/clients', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT * FROM clients WHERE company_id = $1 ORDER BY created_at DESC',
+      'SELECT * FROM clients WHERE company_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC',
       [req.companyId]
     );
     res.json(result.rows);
   } catch (error) {
     console.error('Get clients error:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET deleted clients (admin only)
+app.get('/api/clients/deleted', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT c.*, u.email as deleted_by_email 
+       FROM clients c 
+       LEFT JOIN users u ON c.deleted_by = u.id
+       WHERE c.company_id = $1 AND c.deleted_at IS NOT NULL 
+       ORDER BY c.deleted_at DESC`,
+      [req.companyId]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get deleted clients error:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -702,7 +758,7 @@ app.post('/api/clients', authenticateToken, checkCompanyAccess, async (req, res)
       { field: 'company_vat', value: companyVat, label: 'Company VAT' },
       { field: 'email', value: email, label: 'Email' },
       { field: 'iban', value: iban, label: 'IBAN' }
-    ], null, req.companyId);  // ✅ Pass companyId
+    ], null, req.companyId);
 
     if (duplicateErrors.length > 0) {
       return res.status(400).json({ 
@@ -796,9 +852,9 @@ app.put('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req, r
       phone, email, iban, swift, clientContractId 
     } = req.body;
 
-    // Verify client belongs to company
+    // Verify client belongs to company (exclude soft-deleted)
     const checkResult = await pool.query(
-      'SELECT id FROM clients WHERE id = $1 AND company_id = $2',
+      'SELECT id FROM clients WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL',
       [id, req.companyId]
     );
 
@@ -811,7 +867,7 @@ app.put('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req, r
       { field: 'company_vat', value: companyVat, label: 'Company VAT' },
       { field: 'email', value: email, label: 'Email' },
       { field: 'iban', value: iban, label: 'IBAN' }
-    ], id, req.companyId);  // ✅ Pass both excludeId and companyId
+    ], id, req.companyId);
 
     if (duplicateErrors.length > 0) {
       return res.status(400).json({ 
@@ -825,7 +881,7 @@ app.put('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req, r
       `UPDATE clients 
        SET first_name = $1, last_name = $2, company_name = $3, company_address = $4, 
            company_vat = $5, phone = $6, email = $7, iban = $8, swift = $9, client_contract_id = $10
-       WHERE id = $11 AND company_id = $12 RETURNING *`,
+       WHERE id = $11 AND company_id = $12 AND deleted_at IS NULL RETURNING *`,
       [firstName, lastName, companyName, companyAddress, companyVat, phone, email, iban, swift, clientContractId, id, req.companyId]
     );
     
@@ -842,14 +898,14 @@ app.put('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req, r
   }
 });
 
-// DELETE client
+// DELETE client (SOFT DELETE)
 app.delete('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Verify client belongs to company
+    // Verify client belongs to company (exclude already soft-deleted)
     const checkResult = await pool.query(
-      'SELECT id FROM clients WHERE id = $1 AND company_id = $2',
+      'SELECT id FROM clients WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL',
       [id, req.companyId]
     );
 
@@ -857,9 +913,9 @@ app.delete('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req
       return res.status(404).json({ error: 'Client not found' });
     }
 
-    // Check if client has contracts
+    // Check if client has active contracts (exclude soft-deleted)
     const contractCheck = await pool.query(
-      'SELECT COUNT(*) as count FROM contracts WHERE client_id = $1',
+      'SELECT COUNT(*) as count FROM contracts WHERE client_id = $1 AND deleted_at IS NULL',
       [id]
     );
 
@@ -869,10 +925,29 @@ app.delete('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req
       });
     }
 
-    await pool.query('DELETE FROM clients WHERE id = $1 AND company_id = $2', [id, req.companyId]);
+    // ✅ SOFT DELETE instead of hard delete
+    await pool.query(
+      'UPDATE clients SET deleted_at = NOW(), deleted_by = $1 WHERE id = $2 AND company_id = $3',
+      [req.userId, id, req.companyId]
+    );
     res.json({ message: 'Client deleted successfully' });
   } catch (error) {
     console.error('Delete client error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Restore deleted client (admin only)
+app.post('/api/clients/:id/restore', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query(
+      'UPDATE clients SET deleted_at = NULL, deleted_by = NULL WHERE id = $1 AND company_id = $2',
+      [id, req.companyId]
+    );
+    res.json({ message: 'Client restored successfully' });
+  } catch (error) {
+    console.error('Restore client error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -891,7 +966,7 @@ app.post('/api/consultants/bulk', authenticateToken, checkCompanyAccess, async (
         { field: 'company_vat', value: consultant.companyVat, label: 'Company VAT' },
         { field: 'email', value: consultant.email, label: 'Email' },
         { field: 'iban', value: consultant.iban, label: 'IBAN' }
-      ], null, req.companyId);  // ✅ Pass companyId
+      ], null, req.companyId);
 
       if (duplicateErrors.length > 0) {
         results.errors.push({
@@ -908,7 +983,7 @@ app.post('/api/consultants/bulk', authenticateToken, checkCompanyAccess, async (
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
           [consultant.firstName, consultant.lastName, consultant.companyName, consultant.companyAddress, 
            consultant.companyVat, consultant.phone, consultant.email, consultant.iban, consultant.swift, 
-           consultant.consultantContractId, req.companyId]  // ✅ Added company_id
+           consultant.consultantContractId, req.companyId]
         );
         results.success.push(result.rows[0]);
       } catch (dbError) {
@@ -931,7 +1006,7 @@ app.post('/api/consultants/bulk', authenticateToken, checkCompanyAccess, async (
 });
 
 
-// Contract Routes
+// Contract Routes (exclude soft-deleted)
 app.get('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -948,15 +1023,15 @@ app.get('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res
         c.currency,
         c.status,
         c.notes,
-        c.vat_enabled,    -- Client VAT enabled
-        c.vat_rate,       -- Client VAT rate
-        c.consultant_vat_enabled,    -- ✅ NEW
-        c.consultant_vat_rate,       -- ✅ NEW
+        c.vat_enabled,
+        c.vat_rate,
+        c.consultant_vat_enabled,
+        c.consultant_vat_rate,
         c.company_id,
         c.created_at,
         c.updated_at,
-        cons.consultant_contract_id,  -- ✅ FROM CONSULTANTS TABLE
-        cli.client_contract_id,       -- ✅ FROM CLIENTS TABLE
+        cons.consultant_contract_id,
+        cli.client_contract_id,
         cons.company_name as consultant_company_name,
         cons.first_name as consultant_first_name,
         cons.last_name as consultant_last_name,
@@ -968,7 +1043,7 @@ app.get('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res
       FROM contracts c
       JOIN consultants cons ON c.consultant_id = cons.id
       JOIN clients cli ON c.client_id = cli.id
-      WHERE c.company_id = $1
+      WHERE c.company_id = $1 AND c.deleted_at IS NULL
       ORDER BY c.created_at DESC
     `, [req.companyId]);
 
@@ -979,7 +1054,29 @@ app.get('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res
   }
 });
 
-// Timesheets Routes
+// GET deleted contracts (admin only)
+app.get('/api/contracts/deleted', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT c.*, u.email as deleted_by_email,
+              cons.first_name as consultant_first_name, cons.last_name as consultant_last_name,
+              cli.company_name as client_company_name
+       FROM contracts c 
+       LEFT JOIN users u ON c.deleted_by = u.id
+       LEFT JOIN consultants cons ON c.consultant_id = cons.id
+       LEFT JOIN clients cli ON c.client_id = cli.id
+       WHERE c.company_id = $1 AND c.deleted_at IS NOT NULL 
+       ORDER BY c.deleted_at DESC`,
+      [req.companyId]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Get deleted contracts error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Timesheets Routes (exclude soft-deleted consultants)
 app.get('/api/timesheets', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -990,7 +1087,7 @@ app.get('/api/timesheets', authenticateToken, checkCompanyAccess, async (req, re
              c.id as consultant_id,
              CASE WHEN c.id IS NOT NULL THEN true ELSE false END as consultant_matched
       FROM automation_logs al
-      LEFT JOIN consultants c ON al.sender_email = c.email AND c.company_id = $1
+      LEFT JOIN consultants c ON al.sender_email = c.email AND c.company_id = $1 AND c.deleted_at IS NULL
       WHERE al.processed = false AND al.company_id = $1
       ORDER BY al.created_at DESC
     `, [req.companyId]);
@@ -1010,9 +1107,9 @@ app.post('/api/contracts', authenticateToken, requireAdmin, checkCompanyAccess, 
       consultantId, clientId, fromDate, toDate,
       purchasePrice, sellPrice,
       vatEnabled = false,
-      vatRate,                      // Don't set default here
+      vatRate,
       consultantVatEnabled = false,
-      consultantVatRate            // Don't set default here
+      consultantVatRate
     } = req.body;
 
     if (!contractNumber || !consultantId || !clientId || !fromDate || !toDate || !purchasePrice || !sellPrice) {
@@ -1038,8 +1135,8 @@ app.post('/api/contracts', authenticateToken, requireAdmin, checkCompanyAccess, 
       contractNumber, consultantId, clientId, fromDate, toDate, 
       purchasePrice, sellPrice, 
       consultantContractId, clientContractId,
-      vatEnabled, sanitizedVatRate,                    // ✅ Use sanitized value
-      consultantVatEnabled, sanitizedConsultantVatRate, // ✅ Use sanitized value
+      vatEnabled, sanitizedVatRate,
+      consultantVatEnabled, sanitizedConsultantVatRate,
       req.companyId
     ]);
 
@@ -1130,9 +1227,9 @@ app.put('/api/contracts/:id', authenticateToken, requireAdmin, checkCompanyAcces
       consultantVatEnabled = false, consultantVatRate
     } = req.body;
 
-    // Verify contract belongs to company
+    // Verify contract belongs to company (exclude soft-deleted)
     const checkResult = await pool.query(
-      'SELECT id FROM contracts WHERE id = $1 AND company_id = $2',
+      'SELECT id FROM contracts WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL',
       [id, req.companyId]
     );
 
@@ -1149,7 +1246,7 @@ app.put('/api/contracts/:id', authenticateToken, requireAdmin, checkCompanyAcces
        SET contract_number = $1, consultant_id = $2, client_id = $3, from_date = $4, to_date = $5,
            purchase_price = $6, sell_price = $7, vat_enabled = $8, vat_rate = $9,
            consultant_vat_enabled = $10, consultant_vat_rate = $11, updated_at = NOW()
-       WHERE id = $12 AND company_id = $13
+       WHERE id = $12 AND company_id = $13 AND deleted_at IS NULL
        RETURNING *`,
       [contractNumber, consultantId, clientId, fromDate, toDate, purchasePrice, sellPrice,
        vatEnabled, sanitizedVatRate, consultantVatEnabled, sanitizedConsultantVatRate, id, req.companyId]
@@ -1166,7 +1263,7 @@ app.put('/api/contracts/:id', authenticateToken, requireAdmin, checkCompanyAcces
   }
 });
 
-// Delete contract (Admin only)
+// Delete contract (Admin only) - SOFT DELETE
 app.delete('/api/contracts/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1183,9 +1280,9 @@ app.delete('/api/contracts/:id', authenticateToken, requireAdmin, checkCompanyAc
       });
     }
 
-    // Verify contract belongs to company
+    // Verify contract belongs to company (exclude already soft-deleted)
     const checkResult = await pool.query(
-      'SELECT id FROM contracts WHERE id = $1 AND company_id = $2',
+      'SELECT id FROM contracts WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL',
       [id, req.companyId]
     );
 
@@ -1193,13 +1290,33 @@ app.delete('/api/contracts/:id', authenticateToken, requireAdmin, checkCompanyAc
       return res.status(404).json({ error: 'Contract not found' });
     }
 
-    await pool.query('DELETE FROM contracts WHERE id = $1', [id]);
+    // ✅ SOFT DELETE instead of hard delete
+    await pool.query(
+      'UPDATE contracts SET deleted_at = NOW(), deleted_by = $1 WHERE id = $2',
+      [req.userId, id]
+    );
     res.json({ message: 'Contract deleted successfully' });
   } catch (error) {
     console.error('Delete contract error:', error);
     res.status(500).json({ error: error.message });
   }
 });
+
+// Restore deleted contract (admin only)
+app.post('/api/contracts/:id/restore', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query(
+      'UPDATE contracts SET deleted_at = NULL, deleted_by = NULL WHERE id = $1 AND company_id = $2',
+      [id, req.companyId]
+    );
+    res.json({ message: 'Contract restored successfully' });
+  } catch (error) {
+    console.error('Restore contract error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Match timesheet to consultant
 app.put('/api/timesheets/:id/match', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
@@ -1210,9 +1327,9 @@ app.put('/api/timesheets/:id/match', authenticateToken, checkCompanyAccess, asyn
       return res.status(400).json({ error: 'Consultant ID is required' });
     }
 
-    // Verify consultant belongs to the same company
+    // Verify consultant belongs to the same company (exclude soft-deleted)
     const consultant = await pool.query(
-      'SELECT * FROM consultants WHERE id = $1 AND company_id = $2',
+      'SELECT * FROM consultants WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL',
       [consultantId, req.companyId]
     );
 
@@ -1262,10 +1379,10 @@ app.get('/api/timesheets/:id/available-contracts', authenticateToken, checkCompa
       return res.status(400).json({ error: 'Timesheet month must be set first' });
     }
     
-    // Find consultant
+    // Find consultant (exclude soft-deleted)
     const normalizedEmail = timesheet.sender_email.trim().toLowerCase();
     const consultantResult = await pool.query(
-      `SELECT * FROM consultants WHERE LOWER(TRIM(email)) = $1 AND company_id = $2`,
+      `SELECT * FROM consultants WHERE LOWER(TRIM(email)) = $1 AND company_id = $2 AND deleted_at IS NULL`,
       [normalizedEmail, req.companyId]
     );
     
@@ -1301,8 +1418,7 @@ app.get('/api/timesheets/:id/available-contracts', authenticateToken, checkCompa
     const periodFromStr = periodFrom.toISOString().split('T')[0];
     const periodToStr = periodTo.toISOString().split('T')[0];
     
-    // Find ALL contracts that overlap with the timesheet period
-    // A contract overlaps if: contract_start <= period_end AND contract_end >= period_start
+    // Find ALL contracts that overlap with the timesheet period (exclude soft-deleted)
     const contractsResult = await pool.query(
       `SELECT c.*, 
               cli.first_name as client_first_name, 
@@ -1319,6 +1435,7 @@ app.get('/api/timesheets/:id/available-contracts', authenticateToken, checkCompa
        AND c.company_id = $2 
        AND c.from_date <= $3
        AND c.to_date >= $4
+       AND c.deleted_at IS NULL
        ORDER BY c.from_date DESC`,
       [consultant.id, req.companyId, periodToStr, periodFromStr]
     );
@@ -1354,9 +1471,9 @@ app.put('/api/timesheets/:id/contract', authenticateToken, checkCompanyAccess, a
       return res.status(400).json({ error: 'Contract ID is required' });
     }
     
-    // Verify contract belongs to the same company
+    // Verify contract belongs to the same company (exclude soft-deleted)
     const contract = await pool.query(
-      'SELECT * FROM contracts WHERE id = $1 AND company_id = $2',
+      'SELECT * FROM contracts WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL',
       [contractId, req.companyId]
     );
     
@@ -1397,10 +1514,10 @@ app.put('/api/timesheets/:id/days', authenticateToken, checkCompanyAccess, async
       return res.status(400).json({ error: 'Valid days value is required' });
     }
 
-    // Verify timesheet belongs to user's company (check both company_id and consultant email)
+    // Verify timesheet belongs to user's company
     const checkResult = await pool.query(
       `SELECT al.* FROM automation_logs al
-       LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email))
+       LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email)) AND c.deleted_at IS NULL
        WHERE al.id = $1 AND (al.company_id = $2 OR c.company_id = $2)`,
       [id, req.companyId]
     );
@@ -1436,10 +1553,10 @@ app.put('/api/timesheets/:id/month', authenticateToken, checkCompanyAccess, asyn
       return res.status(400).json({ error: 'Invalid month' });
     }
     
-    // Verify timesheet belongs to user's company (check both company_id and consultant email)
+    // Verify timesheet belongs to user's company
     const checkResult = await pool.query(
       `SELECT al.* FROM automation_logs al
-       LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email))
+       LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email)) AND c.deleted_at IS NULL
        WHERE al.id = $1 AND (al.company_id = $2 OR c.company_id = $2)`,
       [id, req.companyId]
     );
@@ -1473,7 +1590,7 @@ app.put('/api/timesheets/:id/flag-review', authenticateToken, checkCompanyAccess
     // Verify timesheet belongs to user's company
     const checkResult = await pool.query(
       `SELECT al.* FROM automation_logs al
-       LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email))
+       LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email)) AND c.deleted_at IS NULL
        WHERE al.id = $1 AND (al.company_id = $2 OR c.company_id = $2)`,
       [id, req.companyId]
     );
@@ -1507,7 +1624,7 @@ app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAc
   try {
     const { contractId } = req.params;
 
-    // Get contract with consultant and client details
+    // Get contract with consultant and client details (exclude soft-deleted)
 const contractResult = await pool.query(`
   SELECT c.*, 
          cons.first_name as consultant_first_name, cons.last_name as consultant_last_name,
@@ -1517,12 +1634,12 @@ const contractResult = await pool.query(`
          cli.company_name as client_company, cli.company_address as client_address,
          cli.company_vat as client_vat, cli.iban as client_iban, cli.swift as client_swift,
          comp.name as company_name, comp.address as company_address, comp.vat as company_vat,
-         comp.default_vat_rate  -- ← ADD THIS LINE
+         comp.default_vat_rate
   FROM contracts c
   JOIN consultants cons ON c.consultant_id = cons.id
   JOIN clients cli ON c.client_id = cli.id
   JOIN companies comp ON c.company_id = comp.id
-  WHERE c.id = $1 AND c.company_id = $2
+  WHERE c.id = $1 AND c.company_id = $2 AND c.deleted_at IS NULL
 `, [contractId, req.companyId]);
 
     if (contractResult.rows.length === 0) {
@@ -1561,16 +1678,16 @@ const contractResult = await pool.query(`
     const consultantInvoiceNumber = `INV-${year}-${String(consultantInvoiceCount + 1).padStart(4, '0')}-${consultantFullName}`;
 
 // Calculate amounts using company's default VAT rate
-const vatRate = contract.default_vat_rate || 21.00;  // ← ADD THIS
+const vatRate = contract.default_vat_rate || 21.00;
 const vatDecimal = vatRate / 100;
 
 const consultantSubtotal = Math.round(contract.purchase_price * days * 100) / 100;
-const consultantVAT = Math.round(consultantSubtotal * vatDecimal * 100) / 100;  // ✅ ROUNDED
-const consultantTotal = Math.round((consultantSubtotal + consultantVAT) * 100) / 100;  // ✅ ROUNDED
+const consultantVAT = Math.round(consultantSubtotal * vatDecimal * 100) / 100;
+const consultantTotal = Math.round((consultantSubtotal + consultantVAT) * 100) / 100;
 
 const clientSubtotal = Math.round(contract.sell_price * days * 100) / 100;
-const clientVAT = Math.round(clientSubtotal * vatDecimal * 100) / 100;  // ✅ ROUNDED
-const clientTotal = Math.round((clientSubtotal + clientVAT) * 100) / 100;  // ✅ ROUNDED
+const clientVAT = Math.round(clientSubtotal * vatDecimal * 100) / 100;
+const clientTotal = Math.round((clientSubtotal + clientVAT) * 100) / 100;
 
 // Create consultant invoice
 const consultantInvoiceResult = await pool.query(`
@@ -1657,11 +1774,12 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     // Normalize email
     const normalizedEmail = timesheet.sender_email.trim().toLowerCase();
     
-    // Find consultant
+    // Find consultant (exclude soft-deleted)
     const consultantResult = await client.query(
       `SELECT * FROM consultants 
        WHERE LOWER(TRIM(email)) = $1 
-       AND company_id = $2`,
+       AND company_id = $2
+       AND deleted_at IS NULL`,
       [normalizedEmail, req.companyId]
     );
     
@@ -1692,11 +1810,8 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     // Determine the correct year for the timesheet
     let year;
     if (timesheetMonthIndex > currentMonth + 1) {
-      // Timesheet month is much later than current month - must be previous year
-      // e.g., Current: January (0), Timesheet: December (11) -> previous year
       year = currentYear - 1;
     } else {
-      // Normal case - same year
       year = currentYear;
     }
     
@@ -1718,7 +1833,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     if (timesheet.contract_id) {
       console.log(`Using pre-selected contract: ${timesheet.contract_id}`);
       const selectedContractResult = await client.query(
-        `SELECT * FROM contracts WHERE id = $1 AND company_id = $2`,
+        `SELECT * FROM contracts WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL`,
         [timesheet.contract_id, req.companyId]
       );
       
@@ -1729,7 +1844,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       
       contract = selectedContractResult.rows[0];
     } else {
-      // ✅ Find ALL contracts that overlap with this period
+      // ✅ Find ALL contracts that overlap with this period (exclude soft-deleted)
       const contractsResult = await client.query(
         `SELECT c.*, 
                 cli.company_name as client_company_name
@@ -1739,6 +1854,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
          AND c.company_id = $2 
          AND c.from_date <= $3
          AND c.to_date >= $4
+         AND c.deleted_at IS NULL
          ORDER BY c.from_date DESC`,
         [consultant.id, req.companyId, periodToStr, periodFromStr]
       );
@@ -1936,8 +2052,6 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
 // ============================================
 // NEW ENDPOINT: Get timesheet history with linked invoices
 // ============================================
-// Add this new endpoint to your server.js
-
 app.get('/api/timesheets/history', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -1960,7 +2074,7 @@ app.get('/api/timesheets/history', authenticateToken, checkCompanyAccess, async 
         cli.total_amount as client_invoice_total,
         cli.status as client_invoice_status
       FROM automation_logs al
-      LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email)) AND c.company_id = $1
+      LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email)) AND c.company_id = $1 AND c.deleted_at IS NULL
       LEFT JOIN invoices ci ON ci.timesheet_id = al.id AND ci.invoice_type = 'consultant' AND ci.company_id = $1
       LEFT JOIN invoices cli ON cli.timesheet_id = al.id AND cli.invoice_type = 'client' AND cli.company_id = $1
       WHERE al.company_id = $1
@@ -2010,7 +2124,7 @@ app.post('/api/n8n/automation-data', async (req, res) => {
       timestamp, senderEmail, recipientEmail, personName, month,
       emailHours, emailDays, pdfHours, pdfDays,
       hoursDiff, daysDiff, hoursStatus, daysStatus, status,
-      timesheetFileUrl, companyId: directCompanyId  // ✅ Accept companyId directly from N8N
+      timesheetFileUrl, companyId: directCompanyId
     } = req.body;
 
     // ✅ Priority 1: Use companyId directly from N8N payload (most reliable)
@@ -2030,11 +2144,10 @@ app.post('/api/n8n/automation-data', async (req, res) => {
       }
     }
     
-    // ✅ Priority 3: Fallback - match by sender email to consultant
-    // Note: This may be ambiguous if consultant exists in multiple companies
+    // ✅ Priority 3: Fallback - match by sender email to consultant (exclude soft-deleted)
     if (!companyId && senderEmail) {
       const consultantResult = await pool.query(
-        'SELECT company_id FROM consultants WHERE LOWER(email) = LOWER($1) LIMIT 1',
+        'SELECT company_id FROM consultants WHERE LOWER(email) = LOWER($1) AND deleted_at IS NULL LIMIT 1',
         [senderEmail.trim()]
       );
       if (consultantResult.rows.length > 0) {
@@ -2136,7 +2249,7 @@ app.delete('/api/timesheets/:id', authenticateToken, checkCompanyAccess, async (
     // Verify timesheet belongs to user's company
     const checkResult = await pool.query(
       `SELECT al.* FROM automation_logs al
-       LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email))
+       LEFT JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email)) AND c.deleted_at IS NULL
        WHERE al.id = $1 AND (al.company_id = $2 OR c.company_id = $2)`,
       [id, req.companyId]
     );
@@ -2240,7 +2353,7 @@ app.get('/api/timesheets/all', authenticateToken, checkCompanyAccess, async (req
              c.id as consultant_id,
              CASE WHEN c.id IS NOT NULL THEN true ELSE false END as consultant_matched
       FROM automation_logs al
-      LEFT JOIN consultants c ON al.sender_email = c.email AND c.company_id = $1
+      LEFT JOIN consultants c ON al.sender_email = c.email AND c.company_id = $1 AND c.deleted_at IS NULL
       WHERE al.company_id = $1 OR (al.sender_email = c.email AND c.company_id = $1)
       ORDER BY al.created_at DESC
     `, [req.companyId]);
@@ -2278,8 +2391,7 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
     const firstDayStr = firstDayOfMonth.toISOString().split('T')[0];
     const lastDayStr = lastDayOfMonth.toISOString().split('T')[0];
     
-    // ✅ NEW: Get all contracts that overlap with the checking month
-    // A contract overlaps if: from_date <= last day of month AND to_date >= first day of month
+    // ✅ Get all contracts that overlap with the checking month (exclude soft-deleted)
     const contractsResult = await pool.query(
       `SELECT c.id as contract_id, c.contract_number, c.from_date, c.to_date,
               c.purchase_price, c.sell_price,
@@ -2293,6 +2405,9 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
        WHERE c.company_id = $1 
          AND c.from_date <= $2 
          AND c.to_date >= $3
+         AND c.deleted_at IS NULL
+         AND cons.deleted_at IS NULL
+         AND cli.deleted_at IS NULL
        ORDER BY cons.last_name, cons.first_name, c.from_date`,
       [req.companyId, lastDayStr, firstDayStr]
     );
@@ -2303,7 +2418,7 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
        UNION
        SELECT al.* FROM automation_logs al
        INNER JOIN consultants c ON LOWER(TRIM(al.sender_email)) = LOWER(TRIM(c.email))
-       WHERE c.company_id = $1
+       WHERE c.company_id = $1 AND c.deleted_at IS NULL
        ORDER BY created_at DESC`,
       [req.companyId]
     );
@@ -2410,8 +2525,8 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
       deadline_day: deadlineDay,
       deadline_date: deadlineDate.toISOString(),
       is_overdue: isOverdue,
-      contracts: contractStatuses, // NEW: contracts with their status
-      consultants // Legacy: for backward compatibility
+      contracts: contractStatuses,
+      consultants
     });
   } catch (error) {
     console.error('Timesheet status error:', error);
@@ -3069,12 +3184,12 @@ app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, 
   }
 });
 
-// User Management Routes
+// User Management Routes (exclude soft-deleted)
 app.get('/api/users', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT u.id, u.email, u.first_name, u.last_name, u.role, u.permissions, u.active, u.created_at, u.last_login
-      FROM users u WHERE u.company_id = $1 ORDER BY u.created_at DESC
+      FROM users u WHERE u.company_id = $1 AND u.deleted_at IS NULL ORDER BY u.created_at DESC
     `, [req.companyId]);
     res.json(result.rows);
   } catch (error) {
@@ -3095,7 +3210,7 @@ app.post('/api/users', authenticateToken, requireAdmin, checkCompanyAccess, asyn
       return res.status(400).json({ error: 'Invalid role' });
     }
 
-    const existingUser = await pool.query('SELECT * FROM users WHERE email = $1', [email.toLowerCase()]);
+    const existingUser = await pool.query('SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL', [email.toLowerCase()]);
     if (existingUser.rows.length > 0) return res.status(400).json({ error: 'Email already exists' });
 
     const hashedPassword = await bcrypt.hash(password, 12);
@@ -3119,7 +3234,7 @@ app.put('/api/users/:id', authenticateToken, requireAdmin, checkCompanyAccess, a
     const { id } = req.params;
     const { email, firstName, lastName, role, permissions, password } = req.body;
 
-    const targetUser = await pool.query('SELECT * FROM users WHERE id = $1 AND company_id = $2', [id, req.companyId]);
+    const targetUser = await pool.query('SELECT * FROM users WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL', [id, req.companyId]);
     if (targetUser.rows.length === 0) return res.status(404).json({ error: 'User not found' });
 
     if (parseInt(id) === req.user.id && role && role !== targetUser.rows[0].role) {
@@ -3149,7 +3264,7 @@ app.put('/api/users/:id', authenticateToken, requireAdmin, checkCompanyAccess, a
     values.push(req.companyId);
 
     const result = await pool.query(
-      `UPDATE users SET ${updateFields.join(', ')} WHERE id = $${valueIndex++} AND company_id = $${valueIndex} RETURNING *`,
+      `UPDATE users SET ${updateFields.join(', ')} WHERE id = $${valueIndex++} AND company_id = $${valueIndex} AND deleted_at IS NULL RETURNING *`,
       values
     );
 
@@ -3163,7 +3278,7 @@ app.put('/api/users/:id', authenticateToken, requireAdmin, checkCompanyAccess, a
 app.put('/api/users/:id/toggle-active', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
-    const userCheck = await pool.query('SELECT * FROM users WHERE id = $1 AND company_id = $2', [id, req.companyId]);
+    const userCheck = await pool.query('SELECT * FROM users WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL', [id, req.companyId]);
     if (userCheck.rows.length === 0) return res.status(404).json({ error: 'User not found' });
 
     if (userCheck.rows[0].id === req.user.id) {
@@ -3178,14 +3293,19 @@ app.put('/api/users/:id/toggle-active', authenticateToken, requireAdmin, checkCo
   }
 });
 
+// DELETE user (SOFT DELETE)
 app.delete('/api/users/:id', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
-    const userCheck = await pool.query('SELECT * FROM users WHERE id = $1 AND company_id = $2', [id, req.companyId]);
+    const userCheck = await pool.query('SELECT * FROM users WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL', [id, req.companyId]);
     if (userCheck.rows.length === 0) return res.status(404).json({ error: 'User not found' });
     if (userCheck.rows[0].id === req.user.id) return res.status(400).json({ error: 'You cannot delete your own account' });
 
-    await pool.query('DELETE FROM users WHERE id = $1', [id]);
+    // ✅ SOFT DELETE instead of hard delete
+    await pool.query(
+      'UPDATE users SET deleted_at = NOW(), deleted_by = $1 WHERE id = $2',
+      [req.userId, id]
+    );
     res.json({ message: 'User deleted successfully' });
   } catch (error) {
     console.error('Delete user error:', error);
@@ -3215,7 +3335,7 @@ app.put('/api/auth/change-password', authenticateToken, async (req, res) => {
 });
 
 // =============================================
-// SUPER ADMIN ROUTES
+// SUPER ADMIN ROUTES (with soft delete filters)
 // =============================================
 
 // Get all companies (super admin only)
@@ -3224,10 +3344,10 @@ app.get('/api/superadmin/companies', authenticateToken, requireSuperAdmin, async
     const result = await pool.query(`
       SELECT 
         c.*,
-        (SELECT COUNT(*) FROM users WHERE company_id = c.id) as user_count,
-        (SELECT COUNT(*) FROM consultants WHERE company_id = c.id) as consultant_count,
-        (SELECT COUNT(*) FROM clients WHERE company_id = c.id) as client_count,
-        (SELECT COUNT(*) FROM contracts WHERE company_id = c.id) as contract_count,
+        (SELECT COUNT(*) FROM users WHERE company_id = c.id AND deleted_at IS NULL) as user_count,
+        (SELECT COUNT(*) FROM consultants WHERE company_id = c.id AND deleted_at IS NULL) as consultant_count,
+        (SELECT COUNT(*) FROM clients WHERE company_id = c.id AND deleted_at IS NULL) as client_count,
+        (SELECT COUNT(*) FROM contracts WHERE company_id = c.id AND deleted_at IS NULL) as contract_count,
         (SELECT COUNT(*) FROM invoices WHERE company_id = c.id) as invoice_count
       FROM companies c
       ORDER BY c.name ASC
@@ -3250,7 +3370,7 @@ app.get('/api/superadmin/companies/:id', authenticateToken, requireSuperAdmin, a
     }
     
     const usersResult = await pool.query(
-      'SELECT id, email, first_name, last_name, role, active, created_at FROM users WHERE company_id = $1 ORDER BY created_at DESC',
+      'SELECT id, email, first_name, last_name, role, active, created_at FROM users WHERE company_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC',
       [id]
     );
     
@@ -3275,9 +3395,9 @@ app.post('/api/superadmin/impersonate/:companyId', authenticateToken, requireSup
       return res.status(404).json({ error: 'Company not found' });
     }
     
-    // Get first admin user of that company (or any user)
+    // Get first admin user of that company (or any user) - exclude soft-deleted
     const userResult = await pool.query(
-      `SELECT * FROM users WHERE company_id = $1 AND active = true ORDER BY role = 'admin' DESC, created_at ASC LIMIT 1`,
+      `SELECT * FROM users WHERE company_id = $1 AND active = true AND deleted_at IS NULL ORDER BY role = 'admin' DESC, created_at ASC LIMIT 1`,
       [companyId]
     );
     
@@ -3335,7 +3455,7 @@ app.post('/api/superadmin/companies', authenticateToken, requireSuperAdmin, asyn
       return res.status(400).json({ error: 'Company name already exists' });
     }
     
-    const existingUser = await pool.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+    const existingUser = await pool.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1) AND deleted_at IS NULL', [email]);
     if (existingUser.rows.length > 0) {
       return res.status(400).json({ error: 'Email already in use' });
     }
@@ -3387,16 +3507,16 @@ app.put('/api/superadmin/companies/:id', authenticateToken, requireSuperAdmin, a
   }
 });
 
-// Get super admin dashboard stats
+// Get super admin dashboard stats (with soft delete filters)
 app.get('/api/superadmin/stats', authenticateToken, requireSuperAdmin, async (req, res) => {
   try {
     const stats = await pool.query(`
       SELECT 
         (SELECT COUNT(*) FROM companies) as total_companies,
-        (SELECT COUNT(*) FROM users) as total_users,
-        (SELECT COUNT(*) FROM consultants) as total_consultants,
-        (SELECT COUNT(*) FROM clients) as total_clients,
-        (SELECT COUNT(*) FROM contracts) as total_contracts,
+        (SELECT COUNT(*) FROM users WHERE deleted_at IS NULL) as total_users,
+        (SELECT COUNT(*) FROM consultants WHERE deleted_at IS NULL) as total_consultants,
+        (SELECT COUNT(*) FROM clients WHERE deleted_at IS NULL) as total_clients,
+        (SELECT COUNT(*) FROM contracts WHERE deleted_at IS NULL) as total_contracts,
         (SELECT COUNT(*) FROM invoices) as total_invoices,
         (SELECT COUNT(*) FROM automation_logs) as total_timesheets
     `);
