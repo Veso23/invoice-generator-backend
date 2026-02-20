@@ -1088,7 +1088,7 @@ app.get('/api/timesheets', authenticateToken, checkCompanyAccess, async (req, re
              CASE WHEN c.id IS NOT NULL THEN true ELSE false END as consultant_matched
       FROM automation_logs al
       LEFT JOIN consultants c ON al.sender_email = c.email AND c.company_id = $1 AND c.deleted_at IS NULL
-      WHERE al.processed = false AND al.company_id = $1
+      WHERE al.processed = false AND al.company_id = $1 AND al.deleted_at IS NULL
       ORDER BY al.created_at DESC
     `, [req.companyId]);
 
@@ -2268,7 +2268,10 @@ app.delete('/api/timesheets/:id', authenticateToken, checkCompanyAccess, async (
     }
     
     // Delete the timesheet
-    await pool.query('DELETE FROM automation_logs WHERE id = $1', [id]);
+    await pool.query(
+  'UPDATE automation_logs SET deleted_at = NOW(), deleted_by = $2 WHERE id = $1',
+  [id, req.user.id]
+);
     
     console.log('🗑️ Deleted timesheet:', id, 'status:', timesheet.status);
     
