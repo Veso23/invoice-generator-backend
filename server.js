@@ -2284,15 +2284,18 @@ app.patch('/api/invoices/:id/status', authenticateToken, checkCompanyAccess, asy
       return res.status(400).json({ error: `Status must be one of: ${allowed.join(', ')}` });
     }
 
+    const isPaid = status === 'paid';
+    const paidAtValue = isPaid ? (paid_at || new Date().toISOString()) : null;
+
     const result = await pool.query(`
       UPDATE invoices
       SET status = $1,
-          paid_at = CASE WHEN $1 = 'paid' THEN COALESCE($3::timestamptz, NOW()) ELSE paid_at END,
+          paid_at = CASE WHEN $2 THEN $3::timestamptz ELSE paid_at END,
           due_date = COALESCE($4::date, due_date),
           updated_at = NOW()
-      WHERE id = $2 AND company_id = $5
+      WHERE id = $5 AND company_id = $6
       RETURNING *
-    `, [status, id, paid_at || null, due_date || null, req.companyId]);
+    `, [status, isPaid, paidAtValue, due_date || null, id, req.companyId]);
 
     if (result.rows.length === 0) return res.status(404).json({ error: 'Invoice not found' });
 
