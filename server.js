@@ -2524,7 +2524,7 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
       bank_name, bank_iban, bank_swift, bank_address,
       smtp_host, smtp_port, smtp_username, smtp_password,
       smtp_from_email, smtp_from_name, smtp_secure,
-      invoice_template, contract_renewal_alert_days
+      invoice_template, contract_renewal_alert_days, payment_terms_days
     } = req.body;
     
     const result = await pool.query(
@@ -2534,8 +2534,8 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
            bank_name = $9, bank_iban = $10, bank_swift = $11, bank_address = $12,
            smtp_host = $13, smtp_port = $14, smtp_username = $15, smtp_password = $16,
            smtp_from_email = $17, smtp_from_name = $18, smtp_secure = $19, 
-           invoice_template = $20, contract_renewal_alert_days = $21, updated_at = NOW()
-       WHERE id = $22
+           invoice_template = $20, contract_renewal_alert_days = $21, payment_terms_days = $22, updated_at = NOW()
+       WHERE id = $23
        RETURNING *`,
       [name, address, representative_name, timesheet_deadline_day, 
        company_vat, company_email, timesheet_email, default_vat_rate,
@@ -2544,6 +2544,7 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
        smtp_from_email, smtp_from_name, smtp_secure,
        invoice_template || 'classic',
        contract_renewal_alert_days != null ? parseInt(contract_renewal_alert_days) : 30,
+       payment_terms_days != null ? parseInt(payment_terms_days) : 30,
        req.companyId]
     );
     
@@ -3386,7 +3387,7 @@ app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, 
     await pool.query(
       `UPDATE invoices SET email_sent = true, email_sent_at = NOW(), email_sent_to = $1,
        status = CASE WHEN status = 'draft' THEN 'sent' ELSE status END,
-       due_date = CASE WHEN due_date IS NULL THEN (CURRENT_DATE + INTERVAL '30 days')::date ELSE due_date END,
+       due_date = CASE WHEN due_date IS NULL THEN (CURRENT_DATE + (COALESCE((SELECT payment_terms_days FROM companies WHERE id = $3), 30) || ' days')::interval)::date ELSE due_date END,
        updated_at = NOW() WHERE id = $2`,
       [recipientEmail, id]
     );
