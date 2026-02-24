@@ -162,106 +162,173 @@ const logAudit = async (companyId, userId, userEmail, action, entityType, entity
 // Email Service
 
 const sendInvoiceEmail = async (invoice, companySettings, recipientEmail, recipientName) => {
-  // Check if SMTP is configured
   if (!companySettings.smtp_host || !companySettings.smtp_username || !companySettings.smtp_password) {
     throw new Error('Email settings not configured. Please configure SMTP in Company Settings.');
   }
 
-// Create transporter with timeout and TLS options
   const smtpPort = parseInt(companySettings.smtp_port) || 587;
-  const isSecure = smtpPort === 465; // Port 465 = SSL, 587 = STARTTLS
-  
-  console.log('📧 SMTP Config:', {
-    host: companySettings.smtp_host,
-    port: smtpPort,
-    secure: isSecure,
-    user: companySettings.smtp_username
-  });
-  
+  const isSecure = smtpPort === 465;
+
   const transporter = nodemailer.createTransport({
     host: companySettings.smtp_host,
     port: smtpPort,
     secure: isSecure,
-    auth: {
-      user: companySettings.smtp_username,
-      pass: companySettings.smtp_password
-    },
-    connectionTimeout: 10000, // 10 seconds
+    auth: { user: companySettings.smtp_username, pass: companySettings.smtp_password },
+    connectionTimeout: 10000,
     greetingTimeout: 10000,
     socketTimeout: 15000,
-    tls: {
-      rejectUnauthorized: false // Allow self-signed certificates (common on cPanel)
-    }
+    tls: { rejectUnauthorized: false }
   });
 
-  // Verify connection
-  try {
-    await transporter.verify();
-  } catch (error) {
-    console.error('SMTP verification failed:', error);
+  try { await transporter.verify(); } catch (error) {
     throw new Error('Failed to connect to email server. Please check your SMTP settings.');
   }
 
-  // Email content
-  const emailSubject = `Invoice ${invoice.invoice_number} - ${companySettings.name}`;
-  
-  const emailHTML = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <style>
-        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-        .header { background-color: #2563eb; color: white; padding: 20px; text-align: center; }
-        .content { background-color: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; }
-        .invoice-details { background-color: white; padding: 15px; margin: 20px 0; border-radius: 5px; }
-        .footer { text-align: center; padding: 20px; font-size: 12px; color: #6b7280; }
-        .button { display: inline-block; background-color: #2563eb; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin: 20px 0; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <div class="header">
-          <h1>${companySettings.name}</h1>
-        </div>
-        <div class="content">
-          <p>Dear ${recipientName},</p>
-          
-          <p>Please find your invoice attached to this email.</p>
-          
-          <div class="invoice-details">
-            <strong>Invoice Number:</strong> ${invoice.invoice_number}<br>
-            <strong>Date:</strong> ${new Date(invoice.invoice_date).toLocaleDateString('en-GB')}<br>
-            <strong>Amount:</strong> €${parseFloat(invoice.total_amount).toFixed(2)}<br>
-            <strong>Status:</strong> ${invoice.status}
-          </div>
-          
-          ${invoice.pdf_url ? `<a href="${invoice.pdf_url}" class="button">Download Invoice PDF</a>` : ''}
-          
-          <p>If you have any questions about this invoice, please don't hesitate to contact us.</p>
-          
-          <p>Best regards,<br>
-          ${companySettings.representative_name || companySettings.name}</p>
-        </div>
-        <div class="footer">
-          <p>${companySettings.address || ''}</p>
-          <p>${companySettings.company_email || ''}</p>
-        </div>
-      </div>
-    </body>
-    </html>
-  `;
+  // Fetch PDF as buffer for reliable attachment (works with Supabase signed URLs)
+  let pdfAttachment = null;
+  if (invoice.pdf_url) {
+    try {
+      const pdfFetch = await fetch(invoice.pdf_url);
+      if (pdfFetch.ok) {
+        const buffer = Buffer.from(await pdfFetch.arrayBuffer());
+        pdfAttachment = {
+          filename: `Invoice-${invoice.invoice_number}.pdf`,
+          content: buffer,
+          contentType: 'application/pdf'
+        };
+      }
+    } catch (e) {
+      console.warn('Could not fetch PDF for attachment:', e.message);
+    }
+  }
 
-  // Send email
+  const isClientInvoice = invoice.invoice_type === 'client';
+  const invoiceDate = new Date(invoice.invoice_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' });
+  const dueDate = invoice.due_date ? new Date(invoice.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' }) : null;
+  const vatEnabled = invoice.vat_enabled !== false;
+  const subtotal = parseFloat(invoice.subtotal || 0).toFixed(2);
+  const vatAmount = vatEnabled ? parseFloat(invoice.vat_amount || 0).toFixed(2) : null;
+  const total = parseFloat(invoice.total_amount || 0).toFixed(2);
+  const companyName = companySettings.name || companySettings.company_name || '';
+  const senderName = companySettings.representative_name || companyName;
+
+  const emailSubject = isClientInvoice
+    ? `Invoice ${invoice.invoice_number} from ${companyName}`
+    : `Your Invoice ${invoice.invoice_number} – ${companyName}`;
+
+  const emailHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${emailSubject}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f1f5f9;padding:40px 20px;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;">
+
+        <!-- Header -->
+        <tr><td style="background:linear-gradient(135deg,#4f46e5 0%,#6366f1 100%);border-radius:16px 16px 0 0;padding:36px 40px;text-align:center;">
+          <p style="margin:0 0 6px;font-size:13px;font-weight:700;color:rgba(255,255,255,0.7);text-transform:uppercase;letter-spacing:0.1em;">${companyName}</p>
+          <h1 style="margin:0;font-size:28px;font-weight:900;color:white;letter-spacing:-0.5px;">Invoice ${invoice.invoice_number}</h1>
+          <p style="margin:10px 0 0;font-size:14px;color:rgba(255,255,255,0.8);">${invoiceDate}</p>
+        </td></tr>
+
+        <!-- Body -->
+        <tr><td style="background:white;padding:40px;">
+          <p style="margin:0 0 24px;font-size:16px;color:#374151;">Dear <strong>${recipientName}</strong>,</p>
+          
+          <p style="margin:0 0 28px;font-size:15px;color:#6b7280;line-height:1.6;">
+            ${isClientInvoice
+              ? `Please find attached invoice <strong>${invoice.invoice_number}</strong> for services rendered.${dueDate ? ` Payment is due by <strong>${dueDate}</strong>.` : ''}`
+              : `Please find attached your invoice <strong>${invoice.invoice_number}</strong> for the services you provided.`
+            }
+          </p>
+
+          <!-- Invoice Summary Box -->
+          <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;margin:0 0 28px;">
+            <tr><td style="padding:24px;">
+              <p style="margin:0 0 16px;font-size:11px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:0.1em;">Invoice Summary</p>
+              <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="padding:8px 0;font-size:14px;color:#6b7280;border-bottom:1px solid #e2e8f0;">Invoice Number</td>
+                  <td style="padding:8px 0;font-size:14px;color:#0f172a;font-weight:700;text-align:right;border-bottom:1px solid #e2e8f0;">${invoice.invoice_number}</td>
+                </tr>
+                <tr>
+                  <td style="padding:8px 0;font-size:14px;color:#6b7280;border-bottom:1px solid #e2e8f0;">Invoice Date</td>
+                  <td style="padding:8px 0;font-size:14px;color:#0f172a;font-weight:700;text-align:right;border-bottom:1px solid #e2e8f0;">${invoiceDate}</td>
+                </tr>
+                ${dueDate ? `<tr>
+                  <td style="padding:8px 0;font-size:14px;color:#6b7280;border-bottom:1px solid #e2e8f0;">Due Date</td>
+                  <td style="padding:8px 0;font-size:14px;color:#dc2626;font-weight:700;text-align:right;border-bottom:1px solid #e2e8f0;">${dueDate}</td>
+                </tr>` : ''}
+                <tr>
+                  <td style="padding:8px 0;font-size:14px;color:#6b7280;${vatEnabled ? 'border-bottom:1px solid #e2e8f0;' : ''}">Subtotal</td>
+                  <td style="padding:8px 0;font-size:14px;color:#0f172a;font-weight:700;text-align:right;${vatEnabled ? 'border-bottom:1px solid #e2e8f0;' : ''}">€${subtotal}</td>
+                </tr>
+                ${vatEnabled ? `<tr>
+                  <td style="padding:8px 0;font-size:14px;color:#6b7280;border-bottom:1px solid #e2e8f0;">VAT (${invoice.vat_rate}%)</td>
+                  <td style="padding:8px 0;font-size:14px;color:#0f172a;font-weight:700;text-align:right;border-bottom:1px solid #e2e8f0;">€${vatAmount}</td>
+                </tr>` : ''}
+                <tr>
+                  <td style="padding:14px 0 8px;font-size:16px;font-weight:800;color:#0f172a;">Total Amount</td>
+                  <td style="padding:14px 0 8px;font-size:20px;font-weight:900;color:#4f46e5;text-align:right;">€${total}</td>
+                </tr>
+              </table>
+            </td></tr>
+          </table>
+
+          <!-- Attachment note -->
+          ${pdfAttachment ? `
+          <table width="100%" cellpadding="0" cellspacing="0" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;margin:0 0 28px;">
+            <tr><td style="padding:16px 20px;">
+              <table cellpadding="0" cellspacing="0"><tr>
+                <td style="padding-right:12px;font-size:24px;">📎</td>
+                <td>
+                  <p style="margin:0;font-size:14px;font-weight:700;color:#1d4ed8;">Invoice PDF Attached</p>
+                  <p style="margin:4px 0 0;font-size:13px;color:#3b82f6;">Invoice-${invoice.invoice_number}.pdf</p>
+                </td>
+              </tr></table>
+            </td></tr>
+          </table>` : invoice.pdf_url ? `
+          <div style="text-align:center;margin:0 0 28px;">
+            <a href="${invoice.pdf_url}" style="display:inline-block;background:#4f46e5;color:white;padding:14px 32px;text-decoration:none;border-radius:10px;font-size:15px;font-weight:700;">
+              📄 Download Invoice PDF
+            </a>
+          </div>` : ''}
+
+          <p style="margin:0 0 8px;font-size:15px;color:#6b7280;line-height:1.6;">
+            ${isClientInvoice 
+              ? 'If you have any questions about this invoice, please do not hesitate to contact us.' 
+              : 'Thank you for your continued work with us.'}
+          </p>
+
+          <p style="margin:24px 0 0;font-size:15px;color:#374151;">
+            Kind regards,<br>
+            <strong>${senderName}</strong>
+            ${companySettings.company_email ? `<br><span style="color:#6b7280;font-size:13px;">${companySettings.company_email}</span>` : ''}
+          </p>
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td style="background:#f8fafc;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 16px 16px;padding:20px 40px;text-align:center;">
+          <p style="margin:0;font-size:12px;color:#94a3b8;">${companyName}${companySettings.address ? ' · ' + companySettings.address : ''}</p>
+          ${companySettings.vat ? `<p style="margin:4px 0 0;font-size:12px;color:#94a3b8;">VAT: ${companySettings.vat}</p>` : ''}
+        </td></tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
   const info = await transporter.sendMail({
-    from: `"${companySettings.smtp_from_name || companySettings.name}" <${companySettings.smtp_from_email || companySettings.smtp_username}>`,
+    from: `"${companySettings.smtp_from_name || companyName}" <${companySettings.smtp_from_email || companySettings.smtp_username}>`,
     to: recipientEmail,
     subject: emailSubject,
     html: emailHTML,
-    attachments: invoice.pdf_url ? [{
-      filename: `Invoice-${invoice.invoice_number}.pdf`,
-      path: invoice.pdf_url
-    }] : []
+    attachments: pdfAttachment ? [pdfAttachment] : []
   });
 
   return info;
@@ -1950,8 +2017,19 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     }
     
     console.log(`Using contract: ${contract.contract_number} (${contract.from_date} to ${contract.to_date})`);
-    
-    // ✅ Generate invoice numbers with SEPARATE sequences
+
+    // ✅ DUPLICATE GUARD: check if invoice already exists for this timesheet
+    const existingInvoice = await client.query(
+      `SELECT id, invoice_number FROM invoices WHERE timesheet_id = $1 AND company_id = $2 LIMIT 1`,
+      [id, req.companyId]
+    );
+    if (existingInvoice.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        error: `Invoice already exists for this timesheet (${existingInvoice.rows[0].invoice_number})`,
+        existing_invoice_id: existingInvoice.rows[0].id
+      });
+    }
     // Lock the invoices table for this company to prevent race conditions
     await client.query(
       'SELECT id FROM invoices WHERE company_id = $1 FOR UPDATE',
@@ -2157,9 +2235,19 @@ app.get('/api/timesheets/history', authenticateToken, checkCompanyAccess, async 
 });
 
 
-// Get all invoices
+// Get all invoices — with auto overdue detection
 app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
+    // Auto-mark overdue: sent invoices past due_date become overdue
+    await pool.query(`
+      UPDATE invoices 
+      SET status = 'overdue'
+      WHERE company_id = $1
+        AND status = 'sent'
+        AND due_date IS NOT NULL
+        AND due_date < CURRENT_DATE
+    `, [req.companyId]);
+
     const result = await pool.query(`
 SELECT i.*, 
        c.consultant_contract_id, 
@@ -2184,6 +2272,41 @@ ORDER BY i.created_at DESC
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+// PATCH invoice status (mark as paid, sent, draft, overdue)
+app.patch('/api/invoices/:id/status', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, paid_at, due_date } = req.body;
+
+    const allowed = ['draft', 'sent', 'paid', 'overdue'];
+    if (!allowed.includes(status)) {
+      return res.status(400).json({ error: `Status must be one of: ${allowed.join(', ')}` });
+    }
+
+    const result = await pool.query(`
+      UPDATE invoices
+      SET status = $1,
+          paid_at = CASE WHEN $1 = 'paid' THEN COALESCE($3::timestamptz, NOW()) ELSE paid_at END,
+          due_date = COALESCE($4::date, due_date),
+          updated_at = NOW()
+      WHERE id = $2 AND company_id = $5
+      RETURNING *
+    `, [status, id, paid_at || null, due_date || null, req.companyId]);
+
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Invoice not found' });
+
+    await logAudit(req.companyId, req.user?.id, req.user?.email,
+      `INVOICE_${status.toUpperCase()}`, 'invoice', parseInt(id),
+      { invoice_number: result.rows[0].invoice_number, status });
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Invoice status update error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 // N8N Integration - Webhook endpoint
 app.post('/api/n8n/automation-data', async (req, res) => {
@@ -3258,7 +3381,9 @@ app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, 
     
     await pool.query(
       `UPDATE invoices SET email_sent = true, email_sent_at = NOW(), email_sent_to = $1,
-       status = CASE WHEN status = 'draft' THEN 'sent' ELSE status END, updated_at = NOW() WHERE id = $2`,
+       status = CASE WHEN status = 'draft' THEN 'sent' ELSE status END,
+       due_date = CASE WHEN due_date IS NULL THEN (CURRENT_DATE + INTERVAL '30 days')::date ELSE due_date END,
+       updated_at = NOW() WHERE id = $2`,
       [recipientEmail, id]
     );
     
