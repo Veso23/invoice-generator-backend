@@ -3612,6 +3612,35 @@ app.get('/api/superadmin/stats', authenticateToken, requireSuperAdmin, async (re
   }
 });
 
+// Toggle reminder_enabled for a consultant
+app.patch('/api/consultants/:id/reminder-toggle', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { reminder_enabled } = req.body;
+
+    if (typeof reminder_enabled !== 'boolean') {
+      return res.status(400).json({ error: 'reminder_enabled must be a boolean' });
+    }
+
+    const result = await pool.query(
+      `UPDATE consultants SET reminder_enabled = $1 WHERE id = $2 AND company_id = $3 AND deleted_at IS NULL RETURNING id, reminder_enabled`,
+      [reminder_enabled, id, req.companyId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Consultant not found' });
+    }
+
+    await logAudit(req.companyId, req.user.id, req.user.email,
+      reminder_enabled ? 'REMINDER_ENABLED' : 'REMINDER_DISABLED', 'consultant', parseInt(id), {});
+
+    res.json({ message: `Reminders ${reminder_enabled ? 'enabled' : 'disabled'}`, ...result.rows[0] });
+  } catch (error) {
+    console.error('Reminder toggle error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 404 handler
 app.use('*', (req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
@@ -3697,7 +3726,7 @@ const sendPendingReminders = async (companyId = null) => {
       const firstDay = new Date(checkingYear, checkingDate.getMonth(), 1).toISOString().split('T')[0];
       const lastDay = new Date(checkingYear, checkingDate.getMonth() + 1, 0).toISOString().split('T')[0];
 
-      // Get active contracts for this period
+      // Get active contracts for this period (only consultants with reminders enabled)
       const contractsResult = await pool.query(`
         SELECT c.id as contract_id, c.from_date, c.to_date,
                cons.id as consultant_id, cons.email as consultant_email,
@@ -3709,6 +3738,7 @@ const sendPendingReminders = async (companyId = null) => {
           AND c.to_date >= $3
           AND c.deleted_at IS NULL
           AND cons.deleted_at IS NULL
+          AND cons.reminder_enabled = TRUE
           AND (c.reminder_sent_at IS NULL OR c.reminder_sent_at < $4)
       `, [company.id, lastDay, firstDay, `${checkingYear}-${checkingDate.getMonth() + 1}-01`]);
 
