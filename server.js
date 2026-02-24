@@ -103,8 +103,64 @@ pool.on('error', (err) => {
 });
 
 const nodemailer = require('nodemailer');
+const cron = require('node-cron');
+
+// ============================================
+// EMAIL HELPERS
+// ============================================
+
+// Reusable SMTP transporter factory
+const createTransporter = (s) => {
+  const smtpPort = parseInt(s.smtp_port) || 587;
+  return nodemailer.createTransport({
+    host: s.smtp_host, port: smtpPort, secure: smtpPort === 465,
+    auth: { user: s.smtp_username, pass: s.smtp_password },
+    connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 15000,
+    tls: { rejectUnauthorized: false }
+  });
+};
+
+const hasSMTP = (s) => s && s.smtp_host && s.smtp_username && s.smtp_password;
+
+const getFromAddress = (s) => `"${s.smtp_from_name || s.name}" <${s.smtp_from_email || s.smtp_username}>`;
+
+// Send confirmation when timesheet is received
+const sendTimesheetConfirmation = async (senderEmail, personName, month, s) => {
+  if (!hasSMTP(s)) return;
+  await createTransporter(s).sendMail({
+    from: getFromAddress(s), to: senderEmail,
+    subject: `Timesheet received - ${month}`,
+    html: `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;background:#f9fafb;margin:0;padding:20px"><div style="max-width:560px;margin:0 auto;background:white;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08)"><div style="background:#4f46e5;padding:28px 32px"><h1 style="color:white;margin:0;font-size:20px">${s.name}</h1></div><div style="padding:32px"><p style="font-size:16px;margin:0 0 16px">Hi ${personName || 'there'},</p><p style="margin:0 0 24px;color:#475569">We have received your timesheet for <strong>${month}</strong>. It is now being reviewed and we will process your invoice shortly.</p><div style="background:#ecfdf5;border-radius:12px;padding:20px;margin-bottom:24px"><p style="margin:0;color:#059669;font-weight:700;font-size:14px">Timesheet received successfully</p><p style="margin:8px 0 0;color:#64748b;font-size:13px">Month: ${month}</p></div><p style="color:#94a3b8;font-size:13px;margin:0">If you have any questions, please contact us.</p></div><div style="background:#f8fafc;padding:16px 32px;border-top:1px solid #f1f5f9"><p style="margin:0;color:#94a3b8;font-size:12px">${s.address || ''}</p></div></div></body></html>`
+  });
+};
+
+// Send reminder to consultant who hasn't submitted
+const sendTimesheetReminder = async (consultantEmail, consultantName, month, deadlineDay, s) => {
+  if (!hasSMTP(s)) return;
+  await createTransporter(s).sendMail({
+    from: getFromAddress(s), to: consultantEmail,
+    subject: `Reminder: Please submit your timesheet for ${month}`,
+    html: `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;background:#f9fafb;margin:0;padding:20px"><div style="max-width:560px;margin:0 auto;background:white;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08)"><div style="background:#f59e0b;padding:28px 32px"><h1 style="color:white;margin:0;font-size:20px">${s.name}</h1></div><div style="padding:32px"><p style="font-size:16px;margin:0 0 16px">Hi ${consultantName},</p><p style="margin:0 0 24px;color:#475569">This is a friendly reminder that we have not yet received your timesheet for <strong>${month}</strong>.</p><div style="background:#fffbeb;border-radius:12px;padding:20px;margin-bottom:24px;border:1px solid #fde68a"><p style="margin:0;color:#d97706;font-weight:700;font-size:14px">Deadline: ${deadlineDay}th of this month</p><p style="margin:8px 0 0;color:#64748b;font-size:13px">Please send your timesheet PDF to ${s.timesheet_email || 'our timesheet inbox'} as soon as possible.</p></div><p style="color:#94a3b8;font-size:13px;margin:0">If you have already sent it, please ignore this message.</p></div><div style="background:#f8fafc;padding:16px 32px;border-top:1px solid #f1f5f9"><p style="margin:0;color:#94a3b8;font-size:12px">${s.address || ''}</p></div></div></body></html>`
+  });
+};
+
+// ============================================
+// AUDIT TRAIL HELPER
+// ============================================
+const logAudit = async (companyId, userId, userEmail, action, entityType, entityId, details = {}) => {
+  try {
+    await pool.query(
+      `INSERT INTO audit_logs (company_id, user_id, user_email, action, entity_type, entity_id, details, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+      [companyId, userId, userEmail, action, entityType, entityId, JSON.stringify(details)]
+    );
+  } catch (err) {
+    console.error('Audit log error (non-critical):', err.message);
+  }
+};
 
 // Email Service
+
 const sendInvoiceEmail = async (invoice, companySettings, recipientEmail, recipientName) => {
   // Check if SMTP is configured
   if (!companySettings.smtp_host || !companySettings.smtp_username || !companySettings.smtp_password) {
@@ -687,6 +743,7 @@ app.delete('/api/consultants/:id', authenticateToken, checkCompanyAccess, async 
       'UPDATE consultants SET deleted_at = NOW(), deleted_by = $1 WHERE id = $2 AND company_id = $3',
       [req.userId, id, req.companyId]
     );
+    await logAudit(req.companyId, req.user.id, req.user.email, 'DELETE_CONSULTANT', 'consultant', parseInt(id), {});
     res.json({ message: 'Consultant deleted successfully' });
   } catch (error) {
     console.error('Delete consultant error:', error);
@@ -930,6 +987,7 @@ app.delete('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req
       'UPDATE clients SET deleted_at = NOW(), deleted_by = $1 WHERE id = $2 AND company_id = $3',
       [req.userId, id, req.companyId]
     );
+    await logAudit(req.companyId, req.user.id, req.user.email, 'DELETE_CLIENT', 'client', parseInt(id), {});
     res.json({ message: 'Client deleted successfully' });
   } catch (error) {
     console.error('Delete client error:', error);
@@ -1295,6 +1353,7 @@ app.delete('/api/contracts/:id', authenticateToken, requireAdmin, checkCompanyAc
       'UPDATE contracts SET deleted_at = NOW(), deleted_by = $1 WHERE id = $2',
       [req.userId, id]
     );
+    await logAudit(req.companyId, req.user.id, req.user.email, 'DELETE_CONTRACT', 'contract', parseInt(id), {});
     res.json({ message: 'Contract deleted successfully' });
   } catch (error) {
     console.error('Delete contract error:', error);
@@ -1608,7 +1667,10 @@ app.put('/api/timesheets/:id/flag-review', authenticateToken, checkCompanyAccess
     );
     
     console.log(`${flagged ? '🚩 Flagged' : '✅ Unflagged'} timesheet:`, id);
-    
+    await logAudit(req.companyId, req.user.id, req.user.email,
+      flagged ? 'FLAG_FOR_REVIEW' : 'UNFLAG_REVIEW', 'timesheet', parseInt(id),
+      { flagged, sender_email: result.rows[0].sender_email, month: result.rows[0].month });
+
     res.json({ 
       message: `Timesheet ${flagged ? 'flagged for review' : 'unflagged'}`,
       timesheet: result.rows[0]
@@ -2028,6 +2090,12 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     console.log('✅ SUCCESS: Invoices created for contract:', contract.contract_number, 
                 'timesheet_id:', id, 'daysWorked:', daysWorked, 'period:', `${monthName} ${year}`);
     
+    await logAudit(req.companyId, req.user.id, req.user.email,
+      'GENERATE_INVOICE', 'timesheet', parseInt(id),
+      { contract_number: contract.contract_number, month: timesheet.month,
+        consultant_invoice: consultantInvoiceResult.rows[0].invoice_number,
+        client_invoice: clientInvoiceResult.rows[0].invoice_number });
+
     res.json({ 
       message: 'Invoices generated successfully',
       consultantInvoice: consultantInvoiceResult.rows[0],
@@ -2176,6 +2244,19 @@ app.post('/api/n8n/automation-data', async (req, res) => {
         pdfHours, pdfDays, hoursDiff, daysDiff, hoursStatus, daysStatus, 
         status, companyId, timesheetFileUrl || null]);
 
+    // Send confirmation email to consultant (non-blocking)
+    if (senderEmail && month) {
+      try {
+        const settingsResult = await pool.query('SELECT * FROM companies WHERE id = $1', [companyId]);
+        if (settingsResult.rows.length > 0) {
+          await sendTimesheetConfirmation(senderEmail, personName, month, settingsResult.rows[0]);
+          console.log('📧 Confirmation email sent to:', senderEmail);
+        }
+      } catch (emailErr) {
+        console.error('Confirmation email failed (non-critical):', emailErr.message);
+      }
+    }
+
     res.status(201).json(result.rows[0]);
   } catch (error) {
     console.error('N8N webhook error:', error);
@@ -2272,6 +2353,10 @@ app.delete('/api/timesheets/:id', authenticateToken, checkCompanyAccess, async (
     
     console.log('🗑️ Deleted timesheet:', id, 'status:', timesheet.status);
     
+    await logAudit(req.companyId, req.user.id, req.user.email,
+      'DELETE_TIMESHEET', 'timesheet', parseInt(id),
+      { sender_email: timesheet.sender_email, month: timesheet.month, status: timesheet.status });
+
     res.json({ message: 'Timesheet deleted successfully' });
   } catch (error) {
     console.error('Delete timesheet error:', error);
@@ -3540,3 +3625,172 @@ app.listen(PORT, '0.0.0.0', () => {
 });
 
 module.exports = app;
+// ============================================
+// AUDIT LOGS ENDPOINT
+// ============================================
+app.get('/api/audit-logs', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { limit = 100, offset = 0, entity_type, action } = req.query;
+    let query = `
+      SELECT al.*, u.first_name, u.last_name
+      FROM audit_logs al
+      LEFT JOIN users u ON al.user_id = u.id
+      WHERE al.company_id = $1
+    `;
+    const params = [req.companyId];
+    let paramIdx = 2;
+
+    if (entity_type) {
+      query += ` AND al.entity_type = $${paramIdx++}`;
+      params.push(entity_type);
+    }
+    if (action) {
+      query += ` AND al.action = $${paramIdx++}`;
+      params.push(action);
+    }
+
+    query += ` ORDER BY al.created_at DESC LIMIT $${paramIdx++} OFFSET $${paramIdx}`;
+    params.push(parseInt(limit), parseInt(offset));
+
+    const result = await pool.query(query, params);
+    const countResult = await pool.query(
+      `SELECT COUNT(*) FROM audit_logs WHERE company_id = $1`,
+      [req.companyId]
+    );
+
+    res.json({ logs: result.rows, total: parseInt(countResult.rows[0].count) });
+  } catch (error) {
+    console.error('Get audit logs error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// TIMESHEET REMINDERS
+// ============================================
+
+// Core reminder logic - reused by both manual trigger and cron
+const sendPendingReminders = async (companyId = null) => {
+  const results = { sent: 0, skipped: 0, errors: [] };
+
+  try {
+    // Get companies to process
+    const companiesQuery = companyId
+      ? 'SELECT * FROM companies WHERE id = $1'
+      : 'SELECT * FROM companies';
+    const companiesResult = await pool.query(companiesQuery, companyId ? [companyId] : []);
+
+    for (const company of companiesResult.rows) {
+      if (!hasSMTP(company)) { results.skipped++; continue; }
+
+      const deadlineDay = company.timesheet_deadline_day || 15;
+      const now = new Date();
+      const currentDay = now.getDate();
+
+      // Determine which month we're checking
+      const checkingDate = currentDay <= deadlineDay
+        ? new Date(now.getFullYear(), now.getMonth() - 1, 1)
+        : new Date(now.getFullYear(), now.getMonth(), 1);
+
+      const checkingMonth = checkingDate.toLocaleDateString('en-US', { month: 'long' });
+      const checkingYear = checkingDate.getFullYear();
+      const firstDay = new Date(checkingYear, checkingDate.getMonth(), 1).toISOString().split('T')[0];
+      const lastDay = new Date(checkingYear, checkingDate.getMonth() + 1, 0).toISOString().split('T')[0];
+
+      // Get active contracts for this period
+      const contractsResult = await pool.query(`
+        SELECT c.id as contract_id, c.from_date, c.to_date,
+               cons.id as consultant_id, cons.email as consultant_email,
+               cons.first_name, cons.last_name
+        FROM contracts c
+        JOIN consultants cons ON c.consultant_id = cons.id
+        WHERE c.company_id = $1
+          AND c.from_date <= $2
+          AND c.to_date >= $3
+          AND c.deleted_at IS NULL
+          AND cons.deleted_at IS NULL
+          AND (c.reminder_sent_at IS NULL OR c.reminder_sent_at < $4)
+      `, [company.id, lastDay, firstDay, `${checkingYear}-${checkingDate.getMonth() + 1}-01`]);
+
+      for (const contract of contractsResult.rows) {
+        // Check if timesheet already submitted for this month
+        const tsResult = await pool.query(`
+          SELECT id FROM automation_logs
+          WHERE company_id = $1
+            AND LOWER(sender_email) = LOWER($2)
+            AND LOWER(month) = LOWER($3)
+            AND invoice_generated = false
+          LIMIT 1
+        `, [company.id, contract.consultant_email, checkingMonth]);
+
+        if (tsResult.rows.length > 0) {
+          results.skipped++;
+          continue; // Already submitted
+        }
+
+        try {
+          await sendTimesheetReminder(
+            contract.consultant_email,
+            `${contract.first_name} ${contract.last_name}`,
+            checkingMonth,
+            deadlineDay,
+            company
+          );
+          // Mark reminder sent on contract
+          await pool.query(
+            'UPDATE contracts SET reminder_sent_at = NOW() WHERE id = $1',
+            [contract.contract_id]
+          );
+          console.log(`📧 Reminder sent to ${contract.consultant_email} for ${checkingMonth}`);
+          results.sent++;
+        } catch (emailErr) {
+          console.error(`Reminder failed for ${contract.consultant_email}:`, emailErr.message);
+          results.errors.push({ consultant: contract.consultant_email, error: emailErr.message });
+        }
+      }
+    }
+  } catch (err) {
+    console.error('sendPendingReminders error:', err);
+    results.errors.push({ error: err.message });
+  }
+
+  return results;
+};
+
+// Manual trigger endpoint (admin only)
+app.post('/api/timesheets/send-reminders', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const results = await sendPendingReminders(req.companyId);
+    await logAudit(req.companyId, req.user.id, req.user.email,
+      'SEND_REMINDERS', 'timesheet', null, results);
+    res.json({ message: 'Reminders processed', ...results });
+  } catch (error) {
+    console.error('Send reminders error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// CRON: Send reminders daily at 09:00
+// Runs 5 days before deadline and day before deadline
+// ============================================
+cron.schedule('0 9 * * *', async () => {
+  console.log('🕐 Cron: checking timesheet reminders...');
+  try {
+    const companiesResult = await pool.query('SELECT id, timesheet_deadline_day FROM companies');
+    
+    for (const company of companiesResult.rows) {
+      const deadlineDay = company.timesheet_deadline_day || 15;
+      const today = new Date().getDate();
+
+      // Only send reminder the day BEFORE the deadline
+      if (today === deadlineDay - 1) {
+        console.log(`📅 Tomorrow is deadline day ${deadlineDay} for company ${company.id} — sending reminders`);
+        const results = await sendPendingReminders(company.id);
+        console.log(`📧 Reminders for company ${company.id}:`, results);
+      }
+    }
+  } catch (err) {
+    console.error('Cron reminder error:', err);
+  }
+});
