@@ -2524,7 +2524,7 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
       bank_name, bank_iban, bank_swift, bank_address,
       smtp_host, smtp_port, smtp_username, smtp_password,
       smtp_from_email, smtp_from_name, smtp_secure,
-      invoice_template
+      invoice_template, contract_renewal_alert_days
     } = req.body;
     
     const result = await pool.query(
@@ -2534,8 +2534,8 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
            bank_name = $9, bank_iban = $10, bank_swift = $11, bank_address = $12,
            smtp_host = $13, smtp_port = $14, smtp_username = $15, smtp_password = $16,
            smtp_from_email = $17, smtp_from_name = $18, smtp_secure = $19, 
-           invoice_template = $20, updated_at = NOW()
-       WHERE id = $21
+           invoice_template = $20, contract_renewal_alert_days = $21, updated_at = NOW()
+       WHERE id = $22
        RETURNING *`,
       [name, address, representative_name, timesheet_deadline_day, 
        company_vat, company_email, timesheet_email, default_vat_rate,
@@ -2543,6 +2543,7 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
        smtp_host, smtp_port, smtp_username, smtp_password,
        smtp_from_email, smtp_from_name, smtp_secure,
        invoice_template || 'classic',
+       contract_renewal_alert_days != null ? parseInt(contract_renewal_alert_days) : 30,
        req.companyId]
     );
     
