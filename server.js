@@ -202,6 +202,24 @@ const sendInvoiceEmail = async (invoice, companySettings, recipientEmail, recipi
     }
   }
 
+  // Fetch timesheet PDF attachment if available
+  let timesheetAttachment = null;
+  if (invoice.timesheet_file_url) {
+    try {
+      const tsFetch = await fetch(invoice.timesheet_file_url);
+      if (tsFetch.ok) {
+        const buffer = Buffer.from(await tsFetch.arrayBuffer());
+        timesheetAttachment = {
+          filename: `Timesheet-${invoice.invoice_number}.pdf`,
+          content: buffer,
+          contentType: 'application/pdf'
+        };
+      }
+    } catch (e) {
+      console.warn('Could not fetch timesheet for attachment:', e.message);
+    }
+  }
+
   const isClientInvoice = invoice.invoice_type === 'client';
   const invoiceDate = new Date(invoice.invoice_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' });
   const dueDate = invoice.due_date ? new Date(invoice.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' }) : null;
@@ -286,8 +304,8 @@ const sendInvoiceEmail = async (invoice, companySettings, recipientEmail, recipi
               <table cellpadding="0" cellspacing="0"><tr>
                 <td style="padding-right:12px;font-size:24px;">📎</td>
                 <td>
-                  <p style="margin:0;font-size:14px;font-weight:700;color:#1d4ed8;">Invoice PDF Attached</p>
-                  <p style="margin:4px 0 0;font-size:13px;color:#3b82f6;">Invoice-${invoice.invoice_number}.pdf</p>
+                  <p style="margin:0;font-size:14px;font-weight:700;color:#1d4ed8;">Attached Documents</p>
+                  <p style="margin:4px 0 0;font-size:13px;color:#3b82f6;">Invoice-${invoice.invoice_number}.pdf${timesheetAttachment ? `<br>Timesheet-${invoice.invoice_number}.pdf` : ''}</p>
                 </td>
               </tr></table>
             </td></tr>
@@ -328,7 +346,10 @@ const sendInvoiceEmail = async (invoice, companySettings, recipientEmail, recipi
     to: recipientEmail,
     subject: emailSubject,
     html: emailHTML,
-    attachments: pdfAttachment ? [pdfAttachment] : []
+    attachments: [
+      ...(pdfAttachment ? [pdfAttachment] : []),
+      ...(timesheetAttachment ? [timesheetAttachment] : [])
+    ]
   });
 
   return info;
@@ -3395,12 +3416,14 @@ app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, 
       SELECT i.*, cons.email as consultant_email, cons.first_name as consultant_first_name, cons.last_name as consultant_last_name,
              cli.email as client_email, cli.first_name as client_first_name, cli.last_name as client_last_name,
              comp.name as company_name, comp.smtp_host, comp.smtp_port, comp.smtp_username, comp.smtp_password,
-             comp.smtp_from_email, comp.smtp_from_name, comp.smtp_secure, comp.address, comp.company_email, comp.representative_name
+             comp.smtp_from_email, comp.smtp_from_name, comp.smtp_secure, comp.address, comp.company_email, comp.representative_name,
+             al.timesheet_file_url
       FROM invoices i
       JOIN contracts c ON i.contract_id = c.id
       JOIN consultants cons ON c.consultant_id = cons.id
       JOIN clients cli ON c.client_id = cli.id
       JOIN companies comp ON i.company_id = comp.id
+      LEFT JOIN automation_logs al ON al.id = i.timesheet_id
       WHERE i.id = $1 AND i.company_id = $2
     `, [id, req.companyId]);
 
