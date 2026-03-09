@@ -707,7 +707,19 @@ app.post('/api/consultants/batch', authenticateToken, checkCompanyAccess, async 
         await pool.query(`
           INSERT INTO consultants (first_name, last_name, company_name, company_address, company_vat, phone, email, iban, swift, consultant_contract_id, company_id)
           VALUES ${placeholders.join(', ')}
-          ON CONFLICT (email, company_id) DO NOTHING
+          ON CONFLICT (email, company_id) DO UPDATE SET
+            first_name = EXCLUDED.first_name,
+            last_name = EXCLUDED.last_name,
+            company_name = EXCLUDED.company_name,
+            company_address = EXCLUDED.company_address,
+            company_vat = EXCLUDED.company_vat,
+            phone = EXCLUDED.phone,
+            iban = EXCLUDED.iban,
+            swift = EXCLUDED.swift,
+            consultant_contract_id = EXCLUDED.consultant_contract_id,
+            deleted_at = NULL,
+            deleted_by = NULL,
+            updated_at = NOW()
         `, values);
         results.success += chunk.length;
       } catch (error) {
@@ -951,7 +963,19 @@ app.post('/api/clients/batch', authenticateToken, checkCompanyAccess, async (req
         await pool.query(`
           INSERT INTO clients (first_name, last_name, company_name, company_address, company_vat, phone, email, iban, swift, client_contract_id, company_id)
           VALUES ${placeholders.join(', ')}
-          ON CONFLICT (email, company_id) DO NOTHING
+          ON CONFLICT (email, company_id) DO UPDATE SET
+            first_name = EXCLUDED.first_name,
+            last_name = EXCLUDED.last_name,
+            company_name = EXCLUDED.company_name,
+            company_address = EXCLUDED.company_address,
+            company_vat = EXCLUDED.company_vat,
+            phone = EXCLUDED.phone,
+            iban = EXCLUDED.iban,
+            swift = EXCLUDED.swift,
+            client_contract_id = EXCLUDED.client_contract_id,
+            deleted_at = NULL,
+            deleted_by = NULL,
+            updated_at = NOW()
         `, values);
         results.success += chunk.length;
       } catch (error) {
@@ -1326,6 +1350,20 @@ app.post('/api/contracts/batch', authenticateToken, requireAdmin, checkCompanyAc
         const result = await pool.query(`
           INSERT INTO contracts (contract_number, consultant_id, client_id, from_date, to_date, purchase_price, sell_price, vat_enabled, vat_rate, consultant_vat_enabled, consultant_vat_rate, consultant_contract_id, client_contract_id, company_id)
           VALUES ${placeholders.join(', ')}
+          ON CONFLICT (contract_number, company_id) DO UPDATE SET
+            consultant_id = EXCLUDED.consultant_id,
+            client_id = EXCLUDED.client_id,
+            from_date = EXCLUDED.from_date,
+            to_date = EXCLUDED.to_date,
+            purchase_price = EXCLUDED.purchase_price,
+            sell_price = EXCLUDED.sell_price,
+            vat_enabled = EXCLUDED.vat_enabled,
+            vat_rate = EXCLUDED.vat_rate,
+            consultant_vat_enabled = EXCLUDED.consultant_vat_enabled,
+            consultant_vat_rate = EXCLUDED.consultant_vat_rate,
+            deleted_at = NULL,
+            deleted_by = NULL,
+            updated_at = NOW()
           RETURNING id
         `, values);
         results.success += result.rowCount;
