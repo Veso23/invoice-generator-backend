@@ -3425,7 +3425,6 @@ app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, 
     await pool.query(
       `UPDATE invoices SET email_sent = true, email_sent_at = NOW(), email_sent_to = $1,
        status = CASE WHEN status = 'draft' THEN 'sent' ELSE status END,
-       due_date = CASE WHEN due_date IS NULL THEN (CURRENT_DATE + (COALESCE((SELECT payment_terms_days FROM companies WHERE id = $3), 30) || ' days')::interval)::date ELSE due_date END,
        updated_at = NOW() WHERE id = $2`,
       [recipientEmail, id]
     );
