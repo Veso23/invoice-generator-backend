@@ -2654,7 +2654,7 @@ app.get('/api/timesheets/status', authenticateToken, checkCompanyAccess, async (
     
     const checkingMonth = checkingDate.toLocaleDateString('en-US', { month: 'long' });
     const checkingYear = checkingDate.getFullYear();
-    const deadlineDate = new Date(checkingYear, checkingDate.getMonth(), deadlineDay);
+    const deadlineDate = new Date(now.getFullYear(), now.getMonth(), deadlineDay);
     const isOverdue = now > deadlineDate;
     
     // Calculate first and last day of the checking month
