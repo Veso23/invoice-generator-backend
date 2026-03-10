@@ -3030,6 +3030,11 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     const invoiceDate = new Date(invoice.period_to).toLocaleDateString('en-GB');
     const periodMonth = new Date(invoice.period_to).toLocaleDateString('en-US', { month: 'long' });
 
+    // Credit note helpers
+    const isCreditNote = invoice.invoice_type_detail === 'credit_note';
+    const docLabel = isCreditNote ? 'CREDIT NOTE' : 'INVOICE';
+    const docColor = isCreditNote ? '#dc2626' : '#1e40af'; // red for CN, blue for invoice
+
     // Helper function to sanitize text
     const sanitize = (text) => {
       if (!text) return '';
@@ -3043,16 +3048,21 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     // TEMPLATE: MODERN (Blue header)
     // ========================================
     if (template === 'modern') {
-      doc.rect(0, 0, pageWidth, 120).fill('#1e40af');
+      doc.rect(0, 0, pageWidth, 120).fill(docColor);
       
       doc.fontSize(24).font('Helvetica-Bold').fillColor('#ffffff')
          .text(sanitize(fromInfo.company), margin, 40, { width: pageWidth - 200 });
       
-      doc.roundedRect(pageWidth - 180, 35, 130, 45, 6).fill('#3b82f6');
+      doc.roundedRect(pageWidth - 180, 35, 130, 45, 6).fill(docColor);
       doc.fontSize(9).fillColor('#ffffff').font('Helvetica')
-         .text('INVOICE', pageWidth - 170, 43, { width: 110, align: 'center' });
+         .text(docLabel, pageWidth - 170, 43, { width: 110, align: 'center' });
       doc.fontSize(11).font('Helvetica-Bold')
          .text(sanitize(invoice.invoice_number), pageWidth - 170, 58, { width: 110, align: 'center' });
+      
+      if (isCreditNote) {
+        doc.fontSize(8).fillColor('#fca5a5').font('Helvetica')
+           .text(`Ref: ${invoice.original_invoice_id ? 'original invoice' : ''}`, pageWidth - 170, 74, { width: 110, align: 'center' });
+      }
       
       doc.fillColor('#64748b').fontSize(10).font('Helvetica')
          .text(`Issue Date: ${invoiceDate}`, margin, 135);
@@ -3062,7 +3072,7 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       
       let billY = 165;
       doc.roundedRect(leftCol - 10, billY - 8, 230, 105, 6).fill('#f8fafc');
-      doc.fillColor('#1e40af').fontSize(9).font('Helvetica-Bold').text('BILL TO', leftCol, billY);
+      doc.fillColor(docColor).fontSize(9).font('Helvetica-Bold').text('BILL TO', leftCol, billY);
       billY += 18;
       doc.fillColor('#0f172a').fontSize(11).font('Helvetica-Bold')
          .text(sanitize(toInfo.company), leftCol, billY, { width: 210 });
@@ -3078,7 +3088,7 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       
       let fromY = 165;
       doc.roundedRect(rightCol - 10, fromY - 8, 230, 105, 6).fill('#f8fafc');
-      doc.fillColor('#1e40af').fontSize(9).font('Helvetica-Bold').text('FROM', rightCol, fromY);
+      doc.fillColor(docColor).fontSize(9).font('Helvetica-Bold').text('FROM', rightCol, fromY);
       fromY += 18;
       doc.fillColor('#0f172a').fontSize(11).font('Helvetica-Bold')
          .text(sanitize(fromInfo.company), rightCol, fromY, { width: 210 });
@@ -3093,7 +3103,7 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       const tableTop = 295;
       const col1 = margin, col2 = margin + 35, col3 = margin + 280, col4 = margin + 340, col5 = margin + 410;
       
-      doc.rect(margin - 5, tableTop - 8, pageWidth - 90, 28).fill('#1e40af');
+      doc.rect(margin - 5, tableTop - 8, pageWidth - 90, 28).fill(docColor);
       doc.fillColor('#ffffff').fontSize(9).font('Helvetica-Bold');
       doc.text('#', col1, tableTop);
       doc.text('Description', col2, tableTop);
@@ -3141,15 +3151,15 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
       }
       
       // Total - NO BOX, bold black text with line
-      doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor('#1e40af').lineWidth(2).stroke();
+      doc.moveTo(summaryCol1, summaryTop).lineTo(pageWidth - margin, summaryTop).strokeColor(docColor).lineWidth(2).stroke();
       summaryTop += 12;
       doc.fillColor('#0f172a').fontSize(12).font('Helvetica-Bold');
       doc.text('TOTAL:', summaryCol1, summaryTop, { width: 100, align: 'right' });
       doc.fontSize(14).text(`€${parseFloat(invoice.total_amount).toFixed(2)}`, summaryCol2, summaryTop - 1, { width: 70, align: 'right' });
       
       const bankTop = summaryTop + 45;
-      doc.fillColor('#1e40af').fontSize(11).font('Helvetica-Bold').text('Payment Details', margin, bankTop);
-      doc.moveTo(margin, bankTop + 14).lineTo(margin + 120, bankTop + 14).strokeColor('#1e40af').lineWidth(2).stroke();
+      doc.fillColor(docColor).fontSize(11).font('Helvetica-Bold').text('Payment Details', margin, bankTop);
+      doc.moveTo(margin, bankTop + 14).lineTo(margin + 120, bankTop + 14).strokeColor(docColor).lineWidth(2).stroke();
       
       doc.fillColor('#475569').fontSize(10).font('Helvetica');
       doc.text(`IBAN: ${sanitize(fromInfo.iban) || 'N/A'}`, margin, bankTop + 26);
@@ -3166,6 +3176,11 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     // TEMPLATE: CLASSIC - FIXED SPACING
     // ========================================
     else if (template === 'classic' || !template) {
+      // Credit note red banner at top
+      if (isCreditNote) {
+        doc.rect(0, 0, pageWidth, 8).fill('#dc2626');
+      }
+
       doc.fontSize(20).font('Helvetica-Bold').fillColor('#0f172a')
          .text(sanitize(fromInfo.company), margin, 50);
       
@@ -3208,10 +3223,14 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
 
       // Invoice title - dynamic position
       const titleY = Math.max(yPos, fromYPos) + 30;
-      doc.fontSize(16).font('Helvetica-Bold').fillColor('#0f172a')
-         .text(`INVOICE ${invoice.invoice_number}`, margin, titleY, { align: 'center', width: pageWidth - (margin * 2) });
+      doc.fontSize(16).font('Helvetica-Bold').fillColor(isCreditNote ? '#dc2626' : '#0f172a')
+         .text(`${docLabel} ${invoice.invoice_number}`, margin, titleY, { align: 'center', width: pageWidth - (margin * 2) });
+      if (isCreditNote) {
+        doc.fontSize(10).font('Helvetica').fillColor('#dc2626')
+           .text(`Cancels invoice: ${invoice.invoice_number.replace('CN-', '')}`, margin, titleY + 20, { align: 'center', width: pageWidth - (margin * 2) });
+      }
       doc.fontSize(11).font('Helvetica').fillColor('#64748b')
-         .text(`Date: ${invoiceDate}`, margin, titleY + 22, { align: 'center', width: pageWidth - (margin * 2) });
+         .text(`Date: ${invoiceDate}`, margin, titleY + (isCreditNote ? 36 : 22), { align: 'center', width: pageWidth - (margin * 2) });
 
       // Table
       const tableTop = titleY + 60;
@@ -3284,13 +3303,13 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     // TEMPLATE: MINIMAL
     // ========================================
     else if (template === 'minimal') {
-      doc.moveTo(margin, 40).lineTo(pageWidth - margin, 40).strokeColor('#0f172a').lineWidth(2).stroke();
+      doc.moveTo(margin, 40).lineTo(pageWidth - margin, 40).strokeColor(isCreditNote ? '#dc2626' : '#0f172a').lineWidth(isCreditNote ? 3 : 2).stroke();
       
       doc.fontSize(18).font('Helvetica-Bold').fillColor('#0f172a')
          .text(sanitize(fromInfo.company), margin, 55);
-      doc.fontSize(11).font('Helvetica').fillColor('#64748b')
-         .text(`Invoice ${invoice.invoice_number}`, margin, 78);
-      doc.text(`Date: ${invoiceDate}`, pageWidth - 180, 78, { width: 130, align: 'right' });
+      doc.fontSize(11).font('Helvetica').fillColor(isCreditNote ? '#dc2626' : '#64748b')
+         .text(`${docLabel} ${invoice.invoice_number}`, margin, 78);
+      doc.fillColor('#64748b').text(`Date: ${invoiceDate}`, pageWidth - 180, 78, { width: 130, align: 'right' });
       
       doc.moveTo(margin, 100).lineTo(pageWidth - margin, 100).strokeColor('#e2e8f0').lineWidth(1).stroke();
       
@@ -3378,7 +3397,7 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
     // TEMPLATE: PROFESSIONAL (Green accent)
     // ========================================
     else if (template === 'professional') {
-      doc.rect(0, 0, 6, pageHeight).fill('#059669');
+      doc.rect(0, 0, 6, pageHeight).fill(isCreditNote ? '#dc2626' : '#059669');
       
       doc.fontSize(22).font('Helvetica-Bold').fillColor('#0f172a')
          .text(sanitize(fromInfo.company), margin + 10, 45);
@@ -3386,14 +3405,14 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
          .text(sanitize(fromInfo.address) || '', margin + 10, 72, { width: 250, lineGap: 4 });
       if (fromInfo.vat) doc.text(`VAT: ${sanitize(fromInfo.vat)}`, margin + 10, 100);
       
-      doc.roundedRect(pageWidth - 175, 40, 125, 75, 5).fill('#ecfdf5');
-      doc.fillColor('#059669').fontSize(16).font('Helvetica-Bold').text('INVOICE', pageWidth - 165, 48, { width: 105, align: 'center' });
+      doc.roundedRect(pageWidth - 175, 40, 125, 75, 5).fill(isCreditNote ? '#fef2f2' : '#ecfdf5');
+      doc.fillColor(isCreditNote ? '#dc2626' : '#059669').fontSize(isCreditNote ? 12 : 16).font('Helvetica-Bold').text(docLabel, pageWidth - 165, 48, { width: 105, align: 'center' });
       doc.fillColor('#0f172a').fontSize(9).font('Helvetica').text(sanitize(invoice.invoice_number), pageWidth - 165, 70, { width: 105, align: 'center' });
       doc.fillColor('#64748b').fontSize(9).text(invoiceDate, pageWidth - 165, 95, { width: 105, align: 'center' });
       
       let yPos = 130;
-      doc.fillColor('#059669').fontSize(10).font('Helvetica-Bold').text('BILL TO', margin + 10, yPos);
-      doc.moveTo(margin + 10, yPos + 13).lineTo(margin + 60, yPos + 13).strokeColor('#059669').lineWidth(2).stroke();
+      doc.fillColor(isCreditNote ? '#dc2626' : '#059669').fontSize(10).font('Helvetica-Bold').text('BILL TO', margin + 10, yPos);
+      doc.moveTo(margin + 10, yPos + 13).lineTo(margin + 60, yPos + 13).strokeColor(isCreditNote ? '#dc2626' : '#059669').lineWidth(2).stroke();
       yPos += 24;
       doc.fillColor('#0f172a').fontSize(11).font('Helvetica-Bold').text(sanitize(toInfo.company), margin + 10, yPos);
       yPos += 16;
@@ -3895,6 +3914,134 @@ app.patch('/api/consultants/:id/reminder-toggle', authenticateToken, requireAdmi
   } catch (error) {
     console.error('Reminder toggle error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+
+// ============================================================
+// CREDIT NOTE ROUTES
+// ============================================================
+
+// Auto-migrate: add credit note columns if not present
+(async () => {
+  try {
+    await pool.query(`
+      ALTER TABLE invoices
+        ADD COLUMN IF NOT EXISTS invoice_type_detail VARCHAR(20) DEFAULT 'standard',
+        ADD COLUMN IF NOT EXISTS original_invoice_id INTEGER REFERENCES invoices(id) ON DELETE SET NULL
+    `);
+    console.log('✅ Credit note columns ready');
+  } catch (err) {
+    console.error('Migration warning (credit note columns):', err.message);
+  }
+})();
+
+// POST /api/invoices/:id/credit-note — create credit note for an invoice
+app.post('/api/invoices/:id/credit-note', authenticateToken, checkCompanyAccess, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+
+    // Fetch original invoice with full join data
+    const origResult = await client.query(`
+      SELECT i.*,
+             c.consultant_id, c.client_id, c.consultant_contract_id, c.client_contract_id,
+             c.vat_enabled, c.vat_rate, c.consultant_vat_enabled, c.consultant_vat_rate
+      FROM invoices i
+      JOIN contracts c ON i.contract_id = c.id
+      WHERE i.id = $1 AND i.company_id = $2 AND i.deleted_at IS NULL
+    `, [id, req.companyId]);
+
+    if (origResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    const orig = origResult.rows[0];
+
+    if (!['sent', 'paid', 'overdue'].includes(orig.status)) {
+      return res.status(400).json({ error: 'Credit notes can only be created for Sent, Paid or Overdue invoices' });
+    }
+
+    if (orig.invoice_type_detail === 'credit_note') {
+      return res.status(400).json({ error: 'Cannot create a credit note for a credit note' });
+    }
+
+    // Check if credit note already exists for this invoice
+    const existingCN = await client.query(
+      `SELECT id, invoice_number FROM invoices WHERE original_invoice_id = $1 AND invoice_type_detail = 'credit_note' AND company_id = $2`,
+      [id, req.companyId]
+    );
+    if (existingCN.rows.length > 0) {
+      return res.status(400).json({ error: `Credit note already exists: ${existingCN.rows[0].invoice_number}` });
+    }
+
+    await client.query('BEGIN');
+
+    // Build CN number: CN-<original_number>
+    const cnNumber = `CN-${orig.invoice_number}`;
+
+    // Insert credit note — negative amounts
+    const cnResult = await client.query(`
+      INSERT INTO invoices (
+        company_id, contract_id, invoice_number, invoice_date,
+        period_from, period_to, days_worked, daily_rate,
+        subtotal, vat_rate, vat_enabled, vat_amount, total_amount,
+        invoice_type, invoice_type_detail, original_invoice_id,
+        status, timesheet_id
+      ) VALUES ($1,$2,$3,CURRENT_DATE,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'credit_note',$14,'draft',$15)
+      RETURNING *
+    `, [
+      req.companyId,
+      orig.contract_id,
+      cnNumber,
+      orig.period_from,
+      orig.period_to,
+      orig.days_worked,
+      orig.daily_rate,
+      -(Math.abs(parseFloat(orig.subtotal))),
+      orig.vat_rate,
+      orig.vat_enabled,
+      -(Math.abs(parseFloat(orig.vat_amount || 0))),
+      -(Math.abs(parseFloat(orig.total_amount))),
+      orig.invoice_type,
+      id,
+      orig.timesheet_id
+    ]);
+
+    const cn = cnResult.rows[0];
+
+    // Mark original invoice as credited
+    await client.query(
+      `UPDATE invoices SET invoice_type_detail = 'credited', status = 'credited', updated_at = NOW() WHERE id = $1`,
+      [id]
+    );
+
+    // Release timesheet — allow re-generation
+    if (orig.timesheet_id) {
+      await client.query(
+        `UPDATE automation_logs SET invoice_generated = false, invoice_id = NULL WHERE id = $1`,
+        [orig.timesheet_id]
+      );
+    }
+
+    await client.query('COMMIT');
+
+    await logAudit(req.companyId, req.user.id, req.user.email,
+      'CREATE_CREDIT_NOTE', 'invoice', parseInt(id),
+      { credit_note_number: cnNumber, original_invoice: orig.invoice_number });
+
+    res.status(201).json({
+      message: 'Credit note created successfully',
+      creditNote: cn,
+      originalInvoiceId: id
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Credit note error:', error);
+    res.status(500).json({ error: error.message });
+  } finally {
+    client.release();
   }
 });
 
