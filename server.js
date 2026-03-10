@@ -4023,7 +4023,7 @@ app.post('/api/invoices/:id/credit-note', authenticateToken, checkCompanyAccess,
     // Release timesheet — allow re-generation
     if (orig.timesheet_id) {
       await client.query(
-        `UPDATE automation_logs SET invoice_generated = false, invoice_id = NULL WHERE id = $1`,
+        `UPDATE automation_logs SET invoice_generated = false WHERE id = $1`,
         [orig.timesheet_id]
       );
     }
