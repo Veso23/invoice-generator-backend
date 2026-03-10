@@ -3930,6 +3930,10 @@ app.patch('/api/consultants/:id/reminder-toggle', authenticateToken, requireAdmi
         ADD COLUMN IF NOT EXISTS invoice_type_detail VARCHAR(20) DEFAULT 'standard',
         ADD COLUMN IF NOT EXISTS original_invoice_id INTEGER REFERENCES invoices(id) ON DELETE SET NULL
     `);
+    // Drop positive_amounts constraint to allow negative values for credit notes
+    await pool.query(`
+      ALTER TABLE invoices DROP CONSTRAINT IF EXISTS positive_amounts
+    `);
     console.log('✅ Credit note columns ready');
   } catch (err) {
     console.error('Migration warning (credit note columns):', err.message);
