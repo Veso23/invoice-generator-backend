@@ -2349,7 +2349,7 @@ app.get('/api/timesheets/history', authenticateToken, checkCompanyAccess, async 
 // Get all invoices — with auto overdue detection
 app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
-    const { limit, offset, search } = req.query;
+    const { limit, offset, search, type, status } = req.query;
     const useLimit = limit ? parseInt(limit) : null;
     const useOffset = offset ? parseInt(offset) : 0;
     const searchTerm = search ? search.trim() : '';
@@ -2381,6 +2381,22 @@ app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res)
         CONCAT(cons.first_name, ' ', cons.last_name) ILIKE $${p} OR
         CONCAT(cli.first_name, ' ', cli.last_name) ILIKE $${p}
       )`;
+    }
+
+    // Type filter: consultant | client
+    if (type && type !== 'all') {
+      params.push(type);
+      whereClause += ` AND i.invoice_type = $${params.length}`;
+    }
+
+    // Status filter: draft | sent | paid | overdue | credited | credit_note
+    if (status && status !== 'all') {
+      if (status === 'credit_note') {
+        whereClause += ` AND i.invoice_type_detail = 'credit_note'`;
+      } else {
+        params.push(status);
+        whereClause += ` AND i.status = $${params.length}`;
+      }
     }
 
     const baseQuery = `
