@@ -1304,9 +1304,12 @@ app.get('/api/timesheets', authenticateToken, checkCompanyAccess, async (req, re
              c.last_name as consultant_last_name,
              c.company_name as consultant_company_name,
              c.id as consultant_id,
-             CASE WHEN c.id IS NOT NULL THEN true ELSE false END as consultant_matched
+             CASE WHEN c.id IS NOT NULL THEN true ELSE false END as consultant_matched,
+             CASE WHEN cr.id IS NOT NULL THEN true ELSE false END as previously_credited,
+             cr.invoice_number as credited_invoice_number
       FROM automation_logs al
       LEFT JOIN consultants c ON al.sender_email = c.email AND c.company_id = $1 AND c.deleted_at IS NULL
+      LEFT JOIN invoices cr ON cr.timesheet_id = al.id AND cr.invoice_type_detail = 'credited' AND cr.company_id = $1
       WHERE al.processed = false AND al.company_id = $1
       ORDER BY al.created_at DESC
     `, [req.companyId]);
@@ -4014,6 +4017,20 @@ app.post('/api/invoices/:id/credit-note', authenticateToken, checkCompanyAccess,
 
     const cn = cnResult.rows[0];
 
+    // Fetch full CN with joins (names, company info) for frontend state update
+    const cnFull = await client.query(`
+      SELECT i.*,
+             cons.first_name as consultant_first_name, cons.last_name as consultant_last_name,
+             cons.company_name as consultant_company_name,
+             cli.first_name as client_first_name, cli.last_name as client_last_name,
+             cli.company_name as client_company_name
+      FROM invoices i
+      JOIN contracts c ON i.contract_id = c.id
+      JOIN consultants cons ON c.consultant_id = cons.id
+      JOIN clients cli ON c.client_id = cli.id
+      WHERE i.id = $1
+    `, [cn.id]);
+
     // Mark original invoice as credited
     await client.query(
       `UPDATE invoices SET invoice_type_detail = 'credited', status = 'credited', updated_at = NOW() WHERE id = $1`,
@@ -4036,7 +4053,7 @@ app.post('/api/invoices/:id/credit-note', authenticateToken, checkCompanyAccess,
 
     res.status(201).json({
       message: 'Credit note created successfully',
-      creditNote: cn,
+      creditNote: cnFull.rows[0],
       originalInvoiceId: id
     });
 
