@@ -2385,7 +2385,7 @@ JOIN contracts c ON i.contract_id = c.id
 JOIN consultants cons ON c.consultant_id = cons.id
 JOIN clients cli ON c.client_id = cli.id
 WHERE i.company_id = $1
-ORDER BY i.created_at DESC`;
+ORDER BY i.created_at DESC, i.id DESC`;
 
     if (useLimit) {
       params.push(useLimit);
