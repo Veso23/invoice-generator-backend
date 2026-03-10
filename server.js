@@ -3949,7 +3949,7 @@ app.post('/api/invoices/:id/credit-note', authenticateToken, checkCompanyAccess,
              c.vat_enabled, c.vat_rate, c.consultant_vat_enabled, c.consultant_vat_rate
       FROM invoices i
       JOIN contracts c ON i.contract_id = c.id
-      WHERE i.id = $1 AND i.company_id = $2 AND i.deleted_at IS NULL
+      WHERE i.id = $1 AND i.company_id = $2
     `, [id, req.companyId]);
 
     if (origResult.rows.length === 0) {
