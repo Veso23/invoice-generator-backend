@@ -1306,10 +1306,16 @@ app.get('/api/timesheets', authenticateToken, checkCompanyAccess, async (req, re
              c.id as consultant_id,
              CASE WHEN c.id IS NOT NULL THEN true ELSE false END as consultant_matched,
              CASE WHEN cr.id IS NOT NULL THEN true ELSE false END as previously_credited,
-             cr.invoice_number as credited_invoice_number
+             cr.invoice_number as credited_invoice_number,
+             cr.invoice_type as credited_invoice_type,
+             -- check if valid (non-credited) invoices still exist per type
+             CASE WHEN cons_inv.id IS NOT NULL THEN true ELSE false END as has_consultant_invoice,
+             CASE WHEN cli_inv.id IS NOT NULL THEN true ELSE false END as has_client_invoice
       FROM automation_logs al
       LEFT JOIN consultants c ON al.sender_email = c.email AND c.company_id = $1 AND c.deleted_at IS NULL
       LEFT JOIN invoices cr ON cr.timesheet_id = al.id AND cr.invoice_type_detail = 'credited' AND cr.company_id = $1
+      LEFT JOIN invoices cons_inv ON cons_inv.timesheet_id = al.id AND cons_inv.invoice_type = 'consultant' AND cons_inv.company_id = $1 AND cons_inv.invoice_type_detail != 'credit_note' AND cons_inv.status != 'credited'
+      LEFT JOIN invoices cli_inv ON cli_inv.timesheet_id = al.id AND cli_inv.invoice_type = 'client' AND cli_inv.company_id = $1 AND cli_inv.invoice_type_detail != 'credit_note' AND cli_inv.status != 'credited'
       WHERE al.processed = false AND al.company_id = $1
       ORDER BY al.created_at DESC
     `, [req.companyId]);
@@ -2129,18 +2135,24 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     
     console.log(`Using contract: ${contract.contract_number} (${contract.from_date} to ${contract.to_date})`);
 
-    // ✅ DUPLICATE GUARD: check if invoice already exists for this timesheet
-    const existingInvoice = await client.query(
-      `SELECT id, invoice_number FROM invoices WHERE timesheet_id = $1 AND company_id = $2 LIMIT 1`,
+    // ✅ SMART GUARD: check which invoice types already exist (non-credited)
+    const existingInvoices = await client.query(
+      `SELECT id, invoice_number, invoice_type FROM invoices 
+       WHERE timesheet_id = $1 AND company_id = $2 AND invoice_type_detail != 'credit_note' AND status != 'credited'`,
       [id, req.companyId]
     );
-    if (existingInvoice.rows.length > 0) {
+    const existingTypes = existingInvoices.rows.map(r => r.invoice_type);
+    const needConsultant = !existingTypes.includes('consultant');
+    const needClient = !existingTypes.includes('client');
+
+    if (!needConsultant && !needClient) {
       await client.query('ROLLBACK');
       return res.status(409).json({
-        error: `Invoice already exists for this timesheet (${existingInvoice.rows[0].invoice_number})`,
-        existing_invoice_id: existingInvoice.rows[0].id
+        error: `Invoices already exist for this timesheet (${existingInvoices.rows.map(r => r.invoice_number).join(', ')})`,
+        existing_invoice_id: existingInvoices.rows[0].id
       });
     }
+
     // Lock the invoices table for this company to prevent race conditions
     await client.query(
       'SELECT id FROM invoices WHERE company_id = $1 FOR UPDATE',
@@ -2151,121 +2163,76 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     const consultantFullName = (consultant.first_name + consultant.last_name)
       .replace(/[^a-zA-Z0-9]/g, '');
     
-    // Count CLIENT invoices only (one sequence for all client invoices)
-    const clientInvoiceCountResult = await client.query(
-      `SELECT COUNT(*) FROM invoices WHERE company_id = $1 AND invoice_type = 'client'`,
-      [req.companyId]
-    );
-    const clientInvoiceCount = parseInt(clientInvoiceCountResult.rows[0].count);
-    const clientInvoiceNumber = `INV-${year}-${String(clientInvoiceCount + 1).padStart(4, '0')}`;
-    
-    // Count CONSULTANT invoices for THIS consultant only (separate sequence per consultant)
-    const consultantInvoiceCountResult = await client.query(
-      `SELECT COUNT(*) FROM invoices i
-       JOIN contracts c ON i.contract_id = c.id
-       WHERE i.company_id = $1 AND i.invoice_type = 'consultant' AND c.consultant_id = $2`,
-      [req.companyId, consultant.id]
-    );
-    const consultantInvoiceCount = parseInt(consultantInvoiceCountResult.rows[0].count);
-    const consultantInvoiceNumber = `INV-${year}-${String(consultantInvoiceCount + 1).padStart(4, '0')}-${consultantFullName}`;
-    
-    // CALCULATE CONSULTANT INVOICE
-    const consultantDailyRate = parseFloat(contract.purchase_price);
-    const consultantSubtotal = Math.round(consultantDailyRate * daysWorked * 100) / 100;
-    
-    const consultantVatRate = contract.consultant_vat_enabled && contract.consultant_vat_rate 
-      ? parseFloat(contract.consultant_vat_rate) 
-      : 0;
-    
-    const consultantVatAmount = Math.round(consultantSubtotal * (consultantVatRate / 100) * 100) / 100;
-    const consultantTotal = Math.round((consultantSubtotal + consultantVatAmount) * 100) / 100;
-    
-    console.log('Consultant invoice:', {
-      contract: contract.contract_number,
-      dailyRate: consultantDailyRate,
-      daysWorked,
-      subtotal: consultantSubtotal,
-      vatEnabled: contract.consultant_vat_enabled,
-      vatRate: consultantVatRate,
-      vatAmount: consultantVatAmount,
-      total: consultantTotal
-    });
-    
-    const consultantInvoiceResult = await client.query(
-      `INSERT INTO invoices (
-        company_id, contract_id, invoice_number, invoice_date, 
-        period_from, period_to, days_worked, daily_rate, 
-        subtotal, vat_rate, vat_enabled, vat_amount, total_amount, 
-        invoice_type, status, timesheet_id
-      ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-      RETURNING *`,
-      [
-        req.companyId,
-        contract.id,
-        consultantInvoiceNumber,
-        periodFrom,
-        periodTo,
-        daysWorked,
-        consultantDailyRate,
-        consultantSubtotal,
-        consultantVatRate,
-        contract.consultant_vat_enabled || false,
-        consultantVatAmount,
-        consultantTotal,
-        'consultant',
-        'draft',
-        id
-      ]
-    );
-    
-    // CALCULATE CLIENT INVOICE
-    const clientDailyRate = parseFloat(contract.sell_price);
-    const clientSubtotal = Math.round(clientDailyRate * daysWorked * 100) / 100;
-    
-    const clientVatRate = contract.vat_enabled && contract.vat_rate 
-      ? parseFloat(contract.vat_rate) 
-      : 0;
-    
-    const clientVatAmount = Math.round(clientSubtotal * (clientVatRate / 100) * 100) / 100;
-    const clientTotal = Math.round((clientSubtotal + clientVatAmount) * 100) / 100;
-    
-    console.log('Client invoice:', {
-      contract: contract.contract_number,
-      dailyRate: clientDailyRate,
-      daysWorked,
-      subtotal: clientSubtotal,
-      vatEnabled: contract.vat_enabled,
-      vatRate: clientVatRate,
-      vatAmount: clientVatAmount,
-      total: clientTotal
-    });
-    
-    const clientInvoiceResult = await client.query(
-      `INSERT INTO invoices (
-        company_id, contract_id, invoice_number, invoice_date, 
-        period_from, period_to, days_worked, daily_rate, 
-        subtotal, vat_rate, vat_enabled, vat_amount, total_amount, 
-        invoice_type, status, timesheet_id
-      ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-      RETURNING *`,
-      [
-        req.companyId,
-        contract.id,
-        clientInvoiceNumber,
-        periodFrom,
-        periodTo,
-        daysWorked,
-        clientDailyRate,
-        clientSubtotal,
-        clientVatRate,
-        contract.vat_enabled || false,
-        clientVatAmount,
-        clientTotal,
-        'client',
-        'draft',
-        id
-      ]
-    );
+    let consultantInvoiceResult = null;
+    let clientInvoiceResult = null;
+
+    // ── CONSULTANT INVOICE ──────────────────────────────────────────────────
+    if (needConsultant) {
+      const consultantInvoiceCountResult = await client.query(
+        `SELECT COUNT(*) FROM invoices i
+         JOIN contracts c ON i.contract_id = c.id
+         WHERE i.company_id = $1 AND i.invoice_type = 'consultant' AND c.consultant_id = $2`,
+        [req.companyId, consultant.id]
+      );
+      const consultantInvoiceCount = parseInt(consultantInvoiceCountResult.rows[0].count);
+      const consultantInvoiceNumber = `INV-${year}-${String(consultantInvoiceCount + 1).padStart(4, '0')}-${consultantFullName}`;
+      
+      const consultantDailyRate = parseFloat(contract.purchase_price);
+      const consultantSubtotal = Math.round(consultantDailyRate * daysWorked * 100) / 100;
+      const consultantVatRate = contract.consultant_vat_enabled && contract.consultant_vat_rate 
+        ? parseFloat(contract.consultant_vat_rate) : 0;
+      const consultantVatAmount = Math.round(consultantSubtotal * (consultantVatRate / 100) * 100) / 100;
+      const consultantTotal = Math.round((consultantSubtotal + consultantVatAmount) * 100) / 100;
+
+      consultantInvoiceResult = await client.query(
+        `INSERT INTO invoices (
+          company_id, contract_id, invoice_number, invoice_date, 
+          period_from, period_to, days_worked, daily_rate, 
+          subtotal, vat_rate, vat_enabled, vat_amount, total_amount, 
+          invoice_type, status, timesheet_id
+        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        RETURNING *`,
+        [
+          req.companyId, contract.id, consultantInvoiceNumber,
+          periodFrom, periodTo, daysWorked, consultantDailyRate,
+          consultantSubtotal, consultantVatRate, contract.consultant_vat_enabled || false,
+          consultantVatAmount, consultantTotal, 'consultant', 'draft', id
+        ]
+      );
+    }
+
+    // ── CLIENT INVOICE ──────────────────────────────────────────────────────
+    if (needClient) {
+      const clientInvoiceCountResult = await client.query(
+        `SELECT COUNT(*) FROM invoices WHERE company_id = $1 AND invoice_type = 'client'`,
+        [req.companyId]
+      );
+      const clientInvoiceCount = parseInt(clientInvoiceCountResult.rows[0].count);
+      const clientInvoiceNumber = `INV-${year}-${String(clientInvoiceCount + 1).padStart(4, '0')}`;
+
+      const clientDailyRate = parseFloat(contract.sell_price);
+      const clientSubtotal = Math.round(clientDailyRate * daysWorked * 100) / 100;
+      const clientVatRate = contract.vat_enabled && contract.vat_rate 
+        ? parseFloat(contract.vat_rate) : 0;
+      const clientVatAmount = Math.round(clientSubtotal * (clientVatRate / 100) * 100) / 100;
+      const clientTotal = Math.round((clientSubtotal + clientVatAmount) * 100) / 100;
+
+      clientInvoiceResult = await client.query(
+        `INSERT INTO invoices (
+          company_id, contract_id, invoice_number, invoice_date, 
+          period_from, period_to, days_worked, daily_rate, 
+          subtotal, vat_rate, vat_enabled, vat_amount, total_amount, 
+          invoice_type, status, timesheet_id
+        ) VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        RETURNING *`,
+        [
+          req.companyId, contract.id, clientInvoiceNumber,
+          periodFrom, periodTo, daysWorked, clientDailyRate,
+          clientSubtotal, clientVatRate, contract.vat_enabled || false,
+          clientVatAmount, clientTotal, 'client', 'draft', id
+        ]
+      );
+    }
     
     // Mark timesheet as invoiced
     await client.query(
@@ -2282,13 +2249,15 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     await logAudit(req.companyId, req.user.id, req.user.email,
       'GENERATE_INVOICE', 'timesheet', parseInt(id),
       { contract_number: contract.contract_number, month: timesheet.month,
-        consultant_invoice: consultantInvoiceResult.rows[0].invoice_number,
-        client_invoice: clientInvoiceResult.rows[0].invoice_number });
+        consultant_invoice: consultantInvoiceResult?.rows[0]?.invoice_number || 'skipped',
+        client_invoice: clientInvoiceResult?.rows[0]?.invoice_number || 'skipped' });
 
     res.json({ 
-      message: 'Invoices generated successfully',
-      consultantInvoice: consultantInvoiceResult.rows[0],
-      clientInvoice: clientInvoiceResult.rows[0],
+      message: needConsultant && needClient ? 'Invoices generated successfully'
+              : needConsultant ? 'Consultant invoice generated (client already existed)'
+              : 'Client invoice generated (consultant already existed)',
+      consultantInvoice: consultantInvoiceResult?.rows[0] || null,
+      clientInvoice: clientInvoiceResult?.rows[0] || null,
       matchedContract: {
         id: contract.id,
         contract_number: contract.contract_number,
