@@ -615,11 +615,31 @@ app.post('/api/auth/login', async (req, res) => {
 // GET all consultants (exclude soft-deleted)
 app.get('/api/consultants', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT * FROM consultants WHERE company_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC',
-      [req.companyId]
-    );
-    res.json(result.rows);
+    const { limit, offset, search } = req.query;
+    const useLimit = limit ? parseInt(limit) : null;
+    const useOffset = offset ? parseInt(offset) : 0;
+
+    let whereClause = 'WHERE company_id = $1 AND deleted_at IS NULL';
+    const params = [req.companyId];
+
+    if (search) {
+      params.push(`%${search.toLowerCase()}%`);
+      whereClause += ` AND (LOWER(first_name) LIKE $${params.length} OR LOWER(last_name) LIKE $${params.length} OR LOWER(email) LIKE $${params.length} OR LOWER(company_name) LIKE $${params.length} OR LOWER(company_vat) LIKE $${params.length})`;
+    }
+
+    const countResult = await pool.query(`SELECT COUNT(*) FROM consultants ${whereClause}`, params);
+    const total = parseInt(countResult.rows[0].count);
+
+    let query = `SELECT * FROM consultants ${whereClause} ORDER BY created_at DESC`;
+    if (useLimit) {
+      params.push(useLimit);
+      query += ` LIMIT $${params.length}`;
+      params.push(useOffset);
+      query += ` OFFSET $${params.length}`;
+    }
+
+    const result = await pool.query(query, params);
+    res.json(useLimit ? { data: result.rows, total, limit: useLimit, offset: useOffset } : result.rows);
   } catch (error) {
     console.error('Get consultants error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -873,11 +893,31 @@ app.post('/api/consultants/:id/restore', authenticateToken, requireAdmin, checkC
 // GET all clients (exclude soft-deleted)
 app.get('/api/clients', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT * FROM clients WHERE company_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC',
-      [req.companyId]
-    );
-    res.json(result.rows);
+    const { limit, offset, search } = req.query;
+    const useLimit = limit ? parseInt(limit) : null;
+    const useOffset = offset ? parseInt(offset) : 0;
+
+    let whereClause = 'WHERE company_id = $1 AND deleted_at IS NULL';
+    const params = [req.companyId];
+
+    if (search) {
+      params.push(`%${search.toLowerCase()}%`);
+      whereClause += ` AND (LOWER(first_name) LIKE $${params.length} OR LOWER(last_name) LIKE $${params.length} OR LOWER(email) LIKE $${params.length} OR LOWER(company_name) LIKE $${params.length} OR LOWER(company_vat) LIKE $${params.length})`;
+    }
+
+    const countResult = await pool.query(`SELECT COUNT(*) FROM clients ${whereClause}`, params);
+    const total = parseInt(countResult.rows[0].count);
+
+    let query = `SELECT * FROM clients ${whereClause} ORDER BY created_at DESC`;
+    if (useLimit) {
+      params.push(useLimit);
+      query += ` LIMIT $${params.length}`;
+      params.push(useOffset);
+      query += ` OFFSET $${params.length}`;
+    }
+
+    const result = await pool.query(query, params);
+    res.json(useLimit ? { data: result.rows, total, limit: useLimit, offset: useOffset } : result.rows);
   } catch (error) {
     console.error('Get clients error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -1179,29 +1219,31 @@ app.post('/api/consultants/bulk', authenticateToken, checkCompanyAccess, async (
 // Contract Routes (exclude soft-deleted)
 app.get('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
-    const result = await pool.query(`
+    const { limit, offset, search } = req.query;
+    const useLimit = limit ? parseInt(limit) : null;
+    const useOffset = offset ? parseInt(offset) : 0;
+
+    const params = [req.companyId];
+    let extraWhere = '';
+
+    if (search) {
+      params.push(`%${search.toLowerCase()}%`);
+      extraWhere = ` AND (LOWER(c.contract_number) LIKE $${params.length} OR LOWER(cons.first_name) LIKE $${params.length} OR LOWER(cons.last_name) LIKE $${params.length} OR LOWER(cli.company_name) LIKE $${params.length})`;
+    }
+
+    const countResult = await pool.query(
+      `SELECT COUNT(*) FROM contracts c JOIN consultants cons ON c.consultant_id = cons.id JOIN clients cli ON c.client_id = cli.id WHERE c.company_id = $1 AND c.deleted_at IS NULL${extraWhere}`,
+      params
+    );
+    const total = parseInt(countResult.rows[0].count);
+
+    let query = `
       SELECT 
-        c.id,
-        c.uuid,
-        c.consultant_id,
-        c.client_id,
-        c.contract_number,
-        c.from_date,
-        c.to_date,
-        c.purchase_price,
-        c.sell_price,
-        c.currency,
-        c.status,
-        c.notes,
-        c.vat_enabled,
-        c.vat_rate,
-        c.consultant_vat_enabled,
-        c.consultant_vat_rate,
-        c.company_id,
-        c.created_at,
-        c.updated_at,
-        cons.consultant_contract_id,
-        cli.client_contract_id,
+        c.id, c.uuid, c.consultant_id, c.client_id, c.contract_number,
+        c.from_date, c.to_date, c.purchase_price, c.sell_price, c.currency,
+        c.status, c.notes, c.vat_enabled, c.vat_rate, c.consultant_vat_enabled,
+        c.consultant_vat_rate, c.company_id, c.created_at, c.updated_at,
+        cons.consultant_contract_id, cli.client_contract_id,
         cons.company_name as consultant_company_name,
         cons.first_name as consultant_first_name,
         cons.last_name as consultant_last_name,
@@ -1213,11 +1255,18 @@ app.get('/api/contracts', authenticateToken, checkCompanyAccess, async (req, res
       FROM contracts c
       JOIN consultants cons ON c.consultant_id = cons.id
       JOIN clients cli ON c.client_id = cli.id
-      WHERE c.company_id = $1 AND c.deleted_at IS NULL
-      ORDER BY c.created_at DESC
-    `, [req.companyId]);
+      WHERE c.company_id = $1 AND c.deleted_at IS NULL${extraWhere}
+      ORDER BY c.created_at DESC`;
 
-    res.json(result.rows);
+    if (useLimit) {
+      params.push(useLimit);
+      query += ` LIMIT $${params.length}`;
+      params.push(useOffset);
+      query += ` OFFSET $${params.length}`;
+    }
+
+    const result = await pool.query(query, params);
+    res.json(useLimit ? { data: result.rows, total, limit: useLimit, offset: useOffset } : result.rows);
   } catch (error) {
     console.error('Get contracts error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -2297,6 +2346,10 @@ app.get('/api/timesheets/history', authenticateToken, checkCompanyAccess, async 
 // Get all invoices — with auto overdue detection
 app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
+    const { limit, offset } = req.query;
+    const useLimit = limit ? parseInt(limit) : null;
+    const useOffset = offset ? parseInt(offset) : 0;
+
     // Auto-mark overdue: sent invoices past due_date become overdue
     await pool.query(`
       UPDATE invoices 
@@ -2307,7 +2360,14 @@ app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res)
         AND due_date < CURRENT_DATE
     `, [req.companyId]);
 
-    const result = await pool.query(`
+    const countResult = await pool.query(
+      `SELECT COUNT(*) FROM invoices i JOIN contracts c ON i.contract_id = c.id JOIN consultants cons ON c.consultant_id = cons.id JOIN clients cli ON c.client_id = cli.id WHERE i.company_id = $1`,
+      [req.companyId]
+    );
+    const total = parseInt(countResult.rows[0].count);
+
+    const params = [req.companyId];
+    let query = `
 SELECT i.*, 
        c.consultant_contract_id, 
        c.client_contract_id,
@@ -2322,10 +2382,17 @@ JOIN contracts c ON i.contract_id = c.id
 JOIN consultants cons ON c.consultant_id = cons.id
 JOIN clients cli ON c.client_id = cli.id
 WHERE i.company_id = $1
-ORDER BY i.created_at DESC
-    `, [req.companyId]);
+ORDER BY i.created_at DESC`;
 
-    res.json(result.rows);
+    if (useLimit) {
+      params.push(useLimit);
+      query += ` LIMIT $${params.length}`;
+      params.push(useOffset);
+      query += ` OFFSET $${params.length}`;
+    }
+
+    const result = await pool.query(query, params);
+    res.json(useLimit ? { data: result.rows, total, limit: useLimit, offset: useOffset } : result.rows);
   } catch (error) {
     console.error('Get invoices error:', error);
     res.status(500).json({ error: 'Internal server error' });
