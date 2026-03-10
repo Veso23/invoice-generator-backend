@@ -2349,9 +2349,10 @@ app.get('/api/timesheets/history', authenticateToken, checkCompanyAccess, async 
 // Get all invoices — with auto overdue detection
 app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
-    const { limit, offset } = req.query;
+    const { limit, offset, search } = req.query;
     const useLimit = limit ? parseInt(limit) : null;
     const useOffset = offset ? parseInt(offset) : 0;
+    const searchTerm = search ? search.trim() : '';
 
     // Auto-mark overdue: sent invoices past due_date become overdue
     await pool.query(`
@@ -2363,15 +2364,37 @@ app.get('/api/invoices', authenticateToken, checkCompanyAccess, async (req, res)
         AND due_date < CURRENT_DATE
     `, [req.companyId]);
 
-    const countResult = await pool.query(
-      `SELECT COUNT(*) FROM invoices i JOIN contracts c ON i.contract_id = c.id JOIN consultants cons ON c.consultant_id = cons.id JOIN clients cli ON c.client_id = cli.id WHERE i.company_id = $1`,
-      [req.companyId]
-    );
+    const params = [req.companyId];
+    let whereClause = 'WHERE i.company_id = $1';
+
+    if (searchTerm) {
+      params.push(`%${searchTerm}%`);
+      const p = params.length;
+      whereClause += ` AND (
+        i.invoice_number ILIKE $${p} OR
+        cons.first_name ILIKE $${p} OR
+        cons.last_name ILIKE $${p} OR
+        cons.company_name ILIKE $${p} OR
+        cli.first_name ILIKE $${p} OR
+        cli.last_name ILIKE $${p} OR
+        cli.company_name ILIKE $${p} OR
+        CONCAT(cons.first_name, ' ', cons.last_name) ILIKE $${p} OR
+        CONCAT(cli.first_name, ' ', cli.last_name) ILIKE $${p}
+      )`;
+    }
+
+    const baseQuery = `
+FROM invoices i
+JOIN contracts c ON i.contract_id = c.id
+JOIN consultants cons ON c.consultant_id = cons.id
+JOIN clients cli ON c.client_id = cli.id
+${whereClause}`;
+
+    const countResult = await pool.query(`SELECT COUNT(*) ${baseQuery}`, params);
     const total = parseInt(countResult.rows[0].count);
 
-    const params = [req.companyId];
-    let query = `
-SELECT i.*, 
+    const selectParams = [...params];
+    let query = `SELECT i.*, 
        c.consultant_contract_id, 
        c.client_contract_id,
        cons.first_name as consultant_first_name,
@@ -2380,21 +2403,17 @@ SELECT i.*,
        cli.first_name as client_first_name,
        cli.last_name as client_last_name,
        cli.company_name as client_company_name
-FROM invoices i
-JOIN contracts c ON i.contract_id = c.id
-JOIN consultants cons ON c.consultant_id = cons.id
-JOIN clients cli ON c.client_id = cli.id
-WHERE i.company_id = $1
+${baseQuery}
 ORDER BY i.created_at DESC, i.id DESC`;
 
     if (useLimit) {
-      params.push(useLimit);
-      query += ` LIMIT $${params.length}`;
-      params.push(useOffset);
-      query += ` OFFSET $${params.length}`;
+      selectParams.push(useLimit);
+      query += ` LIMIT $${selectParams.length}`;
+      selectParams.push(useOffset);
+      query += ` OFFSET $${selectParams.length}`;
     }
 
-    const result = await pool.query(query, params);
+    const result = await pool.query(query, selectParams);
     res.json(useLimit ? { data: result.rows, total, limit: useLimit, offset: useOffset } : result.rows);
   } catch (error) {
     console.error('Get invoices error:', error);
