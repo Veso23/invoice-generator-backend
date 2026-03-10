@@ -2075,8 +2075,28 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
     
     let contract;
     
+    // ✅ Re-invoice: if timesheet has a credited invoice, use its contract_id directly
+    const creditedInvoiceResult = await client.query(
+      `SELECT contract_id FROM invoices 
+       WHERE timesheet_id = $1 AND company_id = $2 AND status = 'credited' 
+       ORDER BY id DESC LIMIT 1`,
+      [id, req.companyId]
+    );
+
+    if (creditedInvoiceResult.rows.length > 0) {
+      const creditedContractId = creditedInvoiceResult.rows[0].contract_id;
+      const creditedContractResult = await client.query(
+        `SELECT * FROM contracts WHERE id = $1 AND company_id = $2`,
+        [creditedContractId, req.companyId]
+      );
+      if (creditedContractResult.rows.length > 0) {
+        contract = creditedContractResult.rows[0];
+        console.log(`Re-invoice: using contract from credited invoice: ${contract.contract_number}`);
+      }
+    }
+
     // ✅ Check if contract is already selected on timesheet
-    if (timesheet.contract_id) {
+    if (!contract && timesheet.contract_id) {
       console.log(`Using pre-selected contract: ${timesheet.contract_id}`);
       const selectedContractResult = await client.query(
         `SELECT * FROM contracts WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL`,
@@ -2089,7 +2109,7 @@ app.post('/api/timesheets/:id/generate-invoice', authenticateToken, checkCompany
       }
       
       contract = selectedContractResult.rows[0];
-    } else {
+    } else if (!contract) {
       // ✅ Find ALL contracts that overlap with this period (exclude soft-deleted)
       const contractsResult = await client.query(
         `SELECT c.*, 
