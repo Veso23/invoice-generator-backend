@@ -2657,7 +2657,7 @@ app.get('/api/company/settings', authenticateToken, checkCompanyAccess, async (r
               smtp_host, smtp_port, smtp_username, smtp_password,
               smtp_from_email, smtp_from_name, smtp_secure,
               COALESCE(invoice_template, 'classic') as invoice_template,
-              peppol_enabled, peppol_provider, peppol_sender_id, peppol_environment
+              peppol_enabled, peppol_provider, peppol_sender_id, peppol_environment, country_code
        FROM companies WHERE id = $1`,
       [req.companyId]
     );
@@ -2683,7 +2683,7 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
       smtp_host, smtp_port, smtp_username, smtp_password,
       smtp_from_email, smtp_from_name, smtp_secure,
       invoice_template, contract_renewal_alert_days, payment_terms_days,
-      peppol_enabled, peppol_provider, peppol_api_key, peppol_sender_id, peppol_environment
+      peppol_enabled, peppol_provider, peppol_api_key, peppol_sender_id, peppol_environment, country_code
     } = req.body;
     
     const result = await pool.query(
@@ -2695,8 +2695,8 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
            smtp_from_email = $17, smtp_from_name = $18, smtp_secure = $19, 
            invoice_template = $20, contract_renewal_alert_days = $21, payment_terms_days = $22,
            peppol_enabled = $23, peppol_provider = $24, peppol_api_key = $25,
-           peppol_sender_id = $26, peppol_environment = $27, updated_at = NOW()
-       WHERE id = $28
+           peppol_sender_id = $26, peppol_environment = $27, country_code = $28, updated_at = NOW()
+       WHERE id = $29
        RETURNING *`,
       [name, address, representative_name, timesheet_deadline_day, 
        company_vat, company_email, timesheet_email, default_vat_rate,
@@ -2711,6 +2711,7 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
        peppol_api_key || null,
        peppol_sender_id || null,
        peppol_environment || 'mock',
+       country_code || 'BE',
        req.companyId]
     );
     
@@ -4000,7 +4001,8 @@ app.patch('/api/consultants/:id/reminder-toggle', authenticateToken, requireAdmi
         ADD COLUMN IF NOT EXISTS peppol_provider VARCHAR(50) DEFAULT NULL,
         ADD COLUMN IF NOT EXISTS peppol_api_key VARCHAR(500) DEFAULT NULL,
         ADD COLUMN IF NOT EXISTS peppol_sender_id VARCHAR(100) DEFAULT NULL,
-        ADD COLUMN IF NOT EXISTS peppol_environment VARCHAR(20) DEFAULT 'mock'
+        ADD COLUMN IF NOT EXISTS peppol_environment VARCHAR(20) DEFAULT 'mock',
+        ADD COLUMN IF NOT EXISTS country_code CHAR(2) DEFAULT 'BE'
     `);
     console.log('✅ PEPPOL columns ready');
   } catch (err) {
@@ -4476,7 +4478,8 @@ app.get('/api/invoices/:id/peppol-xml', authenticateToken, checkCompanyAccess, a
               co.bank_iban,
               co.bank_name,
               co.bank_swift,
-              co.peppol_sender_id
+              co.peppol_sender_id,
+              co.country_code as company_country_code
        FROM invoices i
        LEFT JOIN contracts c   ON i.contract_id = c.id
        LEFT JOIN consultants con ON c.consultant_id = con.id
@@ -4544,7 +4547,7 @@ app.get('/api/invoices/:id/peppol-xml', authenticateToken, checkCompanyAccess, a
       <cac:PostalAddress>
         ${supplierLines[0] ? `<cbc:StreetName>${supplierLines[0]}</cbc:StreetName>` : ''}
         ${supplierLines[1] ? `<cbc:CityName>${supplierLines[1]}</cbc:CityName>` : ''}
-        <cac:Country><cbc:IdentificationCode>BE</cbc:IdentificationCode></cac:Country>
+        <cac:Country><cbc:IdentificationCode>${inv.company_country_code || 'BE'}</cbc:IdentificationCode></cac:Country>
       </cac:PostalAddress>
       <cac:PartyTaxScheme>
         <cbc:CompanyID>${(inv.company_vat || '').replace(/\s/g,'')}</cbc:CompanyID>
