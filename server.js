@@ -4265,6 +4265,21 @@ function buildStorecovePayload(invoice, companySettings) {
   return payload;
 }
 
+// GET /api/peppol/lookup?id=0208:0462920226 — proxy to PEPPOL Directory (avoids CORS)
+app.get('/api/peppol/lookup', authenticateToken, async (req, res) => {
+  const { id } = req.query;
+  if (!id) return res.status(400).json({ error: 'Missing id parameter' });
+  try {
+    const url = `https://directory.peppol.eu/search/1.0/json?participant=${encodeURIComponent(id)}&resultCount=1`;
+    const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    if (!response.ok) return res.status(502).json({ error: `Directory returned ${response.status}` });
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    res.status(502).json({ error: `Directory unreachable: ${err.message}` });
+  }
+});
+
 // POST /api/invoices/:id/send-peppol
 app.post('/api/invoices/:id/send-peppol', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
