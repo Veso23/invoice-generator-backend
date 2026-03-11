@@ -401,11 +401,13 @@ const requireSuperAdmin = (req, res, next) => {
 
 // Company middleware
 const checkCompanyAccess = (req, res, next) => {
-  // Super admin can override company_id via header
+  // Super admin can override company_id via header OR query param (for file downloads)
   const impersonateHeader = req.headers['x-impersonate-company'];
-  
-  if (req.user.role === 'superadmin' && impersonateHeader) {
-    req.companyId = parseInt(impersonateHeader);
+  const impersonateQuery = req.query.companyId;
+  const impersonate = impersonateHeader || (req.user.role === 'superadmin' ? impersonateQuery : null);
+
+  if (req.user.role === 'superadmin' && impersonate) {
+    req.companyId = parseInt(impersonate);
     req.isImpersonating = true;
     console.log('👁️ Super admin', req.user.email, 'viewing company:', req.companyId);
   } else {
@@ -4456,7 +4458,6 @@ app.patch('/api/invoices/:id/peppol-status', authenticateToken, requireAdmin, ch
 app.get('/api/invoices/:id/peppol-xml', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
-    console.log('PEPPOL XML request - id:', id, 'companyId:', req.companyId, 'userId:', req.user?.id);
 
     const invoiceResult = await pool.query(
       `SELECT i.*,
@@ -4484,8 +4485,7 @@ app.get('/api/invoices/:id/peppol-xml', authenticateToken, checkCompanyAccess, a
     );
 
     if (invoiceResult.rows.length === 0) {
-      console.log('PEPPOL XML - Invoice not found - id:', id, 'companyId:', req.companyId);
-      return res.status(404).json({ error: 'Invoice not found', debug: { id, companyId: req.companyId } });
+      return res.status(404).json({ error: 'Invoice not found' });
     }
 
     const inv = invoiceResult.rows[0];
