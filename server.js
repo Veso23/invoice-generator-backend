@@ -11,6 +11,12 @@ const morgan = require('morgan');
 require('dotenv').config();
 const { createClient } = require('@supabase/supabase-js');
 
+// ── SECURITY: Fail fast if critical env vars are missing ──────────────────────
+if (!process.env.JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET environment variable is not set. Refusing to start.');
+  process.exit(1);
+}
+
 
 const app = express();
 
@@ -61,8 +67,16 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Impersonate-Company']
 }));
 
-// Handle preflight requests explicitly
-app.options('*', cors());
+// Handle preflight requests with same origin whitelist (not wildcard)
+app.options('*', cors({
+  origin: [
+    'https://invoice-generator-frontend-inky.vercel.app',
+    'http://localhost:3000'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Impersonate-Company']
+}));
 
 // Middleware
 app.use(helmet({
@@ -81,6 +95,16 @@ const limiter = rateLimit({
 // Trust proxy for Render deployment
 app.set('trust proxy', 1);
 app.use('/api/', limiter);
+
+// Stricter rate limit for login/register — prevents brute force
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // only 10 attempts per IP per 15 min
+  message: { error: 'Too many login attempts. Please try again in 15 minutes.' },
+  skipSuccessfulRequests: true // successful logins don't count toward the limit
+});
+app.use('/api/login', authLimiter);
+app.use('/api/register', authLimiter);
 
 // Database connection with Supabase
 const pool = new Pool({
@@ -367,7 +391,7 @@ const authenticateToken = async (req, res, next) => {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const result = await pool.query('SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL', [decoded.userId]);
     
     if (result.rows.length === 0) {
@@ -522,7 +546,7 @@ app.post('/api/auth/register', async (req, res) => {
       const user = userResult.rows[0];
       const token = jwt.sign(
         { userId: user.id, companyId: user.company_id },
-        process.env.JWT_SECRET || 'fallback-secret',
+        process.env.JWT_SECRET,
         { expiresIn: '24h' }
       );
 
@@ -586,7 +610,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     const token = jwt.sign(
       { userId: user.id, companyId: user.company_id },
-      process.env.JWT_SECRET || 'fallback-secret',
+      process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
 
@@ -3813,7 +3837,7 @@ app.post('/api/superadmin/impersonate/:companyId', authenticateToken, requireSup
     // Generate a token for the target user
     const token = jwt.sign(
       { userId: targetUser.id, companyId: targetUser.company_id, impersonatedBy: req.user.id },
-      process.env.JWT_SECRET || 'fallback-secret',
+      process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
     
@@ -4339,7 +4363,7 @@ app.post('/api/invoices/:id/send-peppol', authenticateToken, checkCompanyAccess,
       });
     }
 
-    const env = invoice.peppol_environment || 'mock';
+    const env = (invoice.peppol_environment || 'mock').toLowerCase().trim();
 
     // ── MOCK MODE ──────────────────────────────────────────────────────────────
     if (env === 'mock') {
