@@ -3022,12 +3022,14 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
              cli.company_vat as client_company_vat,
              comp.name as company_name, comp.address as company_address, comp.company_vat as company_vat_number,
              comp.representative_name, comp.bank_name, comp.bank_iban, comp.bank_swift, comp.bank_address,
-             comp.invoice_template
+             comp.invoice_template,
+             orig.invoice_number as original_invoice_number
       FROM invoices i
       JOIN contracts c ON i.contract_id = c.id
       JOIN consultants cons ON c.consultant_id = cons.id
       JOIN clients cli ON c.client_id = cli.id
       JOIN companies comp ON i.company_id = comp.id
+      LEFT JOIN invoices orig ON i.original_invoice_id = orig.id
       WHERE i.id = $1 AND i.company_id = $2
     `, [id, req.companyId]);
 
@@ -3292,7 +3294,7 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
          .text(`${docLabel} ${invoice.invoice_number}`, margin, titleY, { align: 'center', width: pageWidth - (margin * 2) });
       if (isCreditNote) {
         doc.fontSize(10).font('Helvetica').fillColor('#dc2626')
-           .text(`Cancels invoice: ${invoice.invoice_number.replace('CN-', '')}`, margin, titleY + 20, { align: 'center', width: pageWidth - (margin * 2) });
+           .text(`Cancels invoice: ${invoice.original_invoice_number || invoice.original_invoice_id}`, margin, titleY + 20, { align: 'center', width: pageWidth - (margin * 2) });
       }
       doc.fontSize(11).font('Helvetica').fillColor('#64748b')
          .text(`Date: ${invoiceDate}`, margin, titleY + (isCreditNote ? 36 : 22), { align: 'center', width: pageWidth - (margin * 2) });
@@ -4075,8 +4077,16 @@ app.post('/api/invoices/:id/credit-note', authenticateToken, checkCompanyAccess,
 
     await client.query('BEGIN');
 
-    // Build CN number: CN-<original_number>
-    const cnNumber = `CN-${orig.invoice_number}`;
+    // Build CN number with separate sequential counter: CN-YYYY-XXXX
+    const year = new Date().getFullYear();
+    const cnCountResult = await client.query(
+      `SELECT COUNT(*) as cnt FROM invoices 
+       WHERE company_id = $1 AND invoice_type_detail = 'credit_note' 
+       AND EXTRACT(YEAR FROM invoice_date) = $2`,
+      [req.companyId, year]
+    );
+    const cnCount = parseInt(cnCountResult.rows[0].cnt, 10);
+    const cnNumber = `CN-${year}-${String(cnCount + 1).padStart(4, '0')}`;
 
     // Insert credit note — negative amounts
     const cnResult = await client.query(`
