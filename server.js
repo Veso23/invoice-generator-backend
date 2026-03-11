@@ -359,7 +359,8 @@ const sendInvoiceEmail = async (invoice, companySettings, recipientEmail, recipi
 // Authentication middleware
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
+  // Support token as query param for file downloads (e.g. ?token=xxx)
+  const token = (authHeader && authHeader.split(' ')[1]) || req.query.token;
 
   if (!token) {
     return res.status(401).json({ error: 'Access token required' });
@@ -4447,6 +4448,196 @@ app.patch('/api/invoices/:id/peppol-status', authenticateToken, requireAdmin, ch
     );
     res.json(result.rows[0]);
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// GET /api/invoices/:id/peppol-xml — generate UBL 2.1 XML for validation
+app.get('/api/invoices/:id/peppol-xml', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const invoiceResult = await pool.query(
+      `SELECT i.*,
+              con.first_name  as consultant_first_name,
+              con.last_name   as consultant_last_name,
+              cli.company_name    as client_company_name,
+              cli.company_address as client_address,
+              cli.company_vat     as client_vat,
+              cli.peppol_id       as client_peppol_id,
+              co.name             as company_name,
+              co.address          as company_address,
+              co.company_vat,
+              co.company_email,
+              co.bank_iban,
+              co.bank_name,
+              co.bank_swift,
+              co.peppol_sender_id
+       FROM invoices i
+       LEFT JOIN contracts c   ON i.contract_id = c.id
+       LEFT JOIN consultants con ON c.consultant_id = con.id
+       LEFT JOIN clients cli   ON c.client_id = cli.id
+       LEFT JOIN companies co  ON i.company_id = co.id
+       WHERE i.id = $1 AND i.company_id = $2`,
+      [id, req.companyId]
+    );
+
+    if (invoiceResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    const inv = invoiceResult.rows[0];
+
+    const invoiceDate = inv.invoice_date
+      ? new Date(inv.invoice_date).toISOString().split('T')[0]
+      : new Date().toISOString().split('T')[0];
+    const dueDate = inv.due_date
+      ? new Date(inv.due_date).toISOString().split('T')[0]
+      : new Date(Date.now() + 30*24*60*60*1000).toISOString().split('T')[0];
+
+    const subtotal  = parseFloat(inv.subtotal    || 0).toFixed(2);
+    const vatRate   = parseFloat(inv.vat_rate     || 0).toFixed(2);
+    const vatAmount = parseFloat(inv.vat_amount   || 0).toFixed(2);
+    const total     = parseFloat(inv.total_amount || 0).toFixed(2);
+    const days      = parseFloat(inv.days_worked  || 0).toFixed(2);
+    const rate      = parseFloat(inv.daily_rate   || 0).toFixed(2);
+
+    const periodFrom = inv.period_from
+      ? new Date(inv.period_from).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }) : '';
+    const periodTo = inv.period_to
+      ? new Date(inv.period_to).toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' }) : '';
+    const consultantName = [inv.consultant_first_name, inv.consultant_last_name].filter(Boolean).join(' ') || 'Consultant';
+
+    const [senderScheme, ...senderRest] = (inv.peppol_sender_id || '0208:UNKNOWN').split(':');
+    const senderId = senderRest.join(':') || 'UNKNOWN';
+    const [clientScheme, ...clientRest] = (inv.client_peppol_id || '0208:UNKNOWN').split(':');
+    const clientId = clientRest.join(':') || 'UNKNOWN';
+
+    const taxCategory = inv.vat_enabled ? 'S' : 'Z';
+
+    const supplierLines = (inv.company_address || '').split('\n');
+    const clientLines   = (inv.client_address  || '').split('\n');
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
+         xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+         xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+
+  <cbc:CustomizationID>urn:cen.eu:en16931:2017#compliant#urn:fdc:peppol.eu:2017:poacc:billing:3.0</cbc:CustomizationID>
+  <cbc:ProfileID>urn:fdc:peppol.eu:2017:poacc:billing:01:1.0</cbc:ProfileID>
+  <cbc:ID>${inv.invoice_number}</cbc:ID>
+  <cbc:IssueDate>${invoiceDate}</cbc:IssueDate>
+  <cbc:DueDate>${dueDate}</cbc:DueDate>
+  <cbc:InvoiceTypeCode>380</cbc:InvoiceTypeCode>
+  <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
+  <cbc:BuyerReference>${inv.invoice_number}</cbc:BuyerReference>
+
+  <!-- Supplier -->
+  <cac:AccountingSupplierParty>
+    <cac:Party>
+      <cbc:EndpointID schemeID="${senderScheme}">${senderId}</cbc:EndpointID>
+      <cac:PartyName><cbc:Name>${inv.company_name || ''}</cbc:Name></cac:PartyName>
+      <cac:PostalAddress>
+        <cbc:StreetName>${supplierLines[0] || ''}</cbc:StreetName>
+        <cbc:CityName>${supplierLines[1] || ''}</cbc:CityName>
+        <cbc:CountrySubentity></cbc:CountrySubentity>
+        <cac:Country><cbc:IdentificationCode>BE</cbc:IdentificationCode></cac:Country>
+      </cac:PostalAddress>
+      <cac:PartyTaxScheme>
+        <cbc:CompanyID>${(inv.company_vat || '').replace(/\s/g,'')}</cbc:CompanyID>
+        <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
+      </cac:PartyTaxScheme>
+      <cac:PartyLegalEntity>
+        <cbc:RegistrationName>${inv.company_name || ''}</cbc:RegistrationName>
+        <cbc:CompanyID>${(inv.company_vat || '').replace(/\s/g,'')}</cbc:CompanyID>
+      </cac:PartyLegalEntity>
+      <cac:Contact><cbc:ElectronicMail>${inv.company_email || ''}</cbc:ElectronicMail></cac:Contact>
+    </cac:Party>
+  </cac:AccountingSupplierParty>
+
+  <!-- Customer -->
+  <cac:AccountingCustomerParty>
+    <cac:Party>
+      <cbc:EndpointID schemeID="${clientScheme}">${clientId}</cbc:EndpointID>
+      <cac:PartyName><cbc:Name>${inv.client_company_name || ''}</cbc:Name></cac:PartyName>
+      <cac:PostalAddress>
+        <cbc:StreetName>${clientLines[0] || ''}</cbc:StreetName>
+        <cbc:CityName>${clientLines[1] || ''}</cbc:CityName>
+        <cac:Country><cbc:IdentificationCode>BE</cbc:IdentificationCode></cac:Country>
+      </cac:PostalAddress>
+      <cac:PartyTaxScheme>
+        <cbc:CompanyID>${(inv.client_vat || '').replace(/\s/g,'')}</cbc:CompanyID>
+        <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
+      </cac:PartyTaxScheme>
+      <cac:PartyLegalEntity>
+        <cbc:RegistrationName>${inv.client_company_name || ''}</cbc:RegistrationName>
+        <cbc:CompanyID>${(inv.client_vat || '').replace(/\s/g,'')}</cbc:CompanyID>
+      </cac:PartyLegalEntity>
+    </cac:Party>
+  </cac:AccountingCustomerParty>
+
+  <!-- Payment means -->
+  ${inv.bank_iban ? `<cac:PaymentMeans>
+    <cbc:PaymentMeansCode>30</cbc:PaymentMeansCode>
+    <cbc:PaymentID>${inv.invoice_number}</cbc:PaymentID>
+    <cac:PayeeFinancialAccount>
+      <cbc:ID>${(inv.bank_iban || '').replace(/\s/g,'')}</cbc:ID>
+      <cbc:Name>${inv.bank_name || ''}</cbc:Name>
+      ${inv.bank_swift ? `<cac:FinancialInstitutionBranch>
+        <cbc:ID>${inv.bank_swift}</cbc:ID>
+      </cac:FinancialInstitutionBranch>` : ''}
+    </cac:PayeeFinancialAccount>
+  </cac:PaymentMeans>` : ''}
+
+  <!-- VAT totals -->
+  <cac:TaxTotal>
+    <cbc:TaxAmount currencyID="EUR">${vatAmount}</cbc:TaxAmount>
+    <cac:TaxSubtotal>
+      <cbc:TaxableAmount currencyID="EUR">${subtotal}</cbc:TaxableAmount>
+      <cbc:TaxAmount currencyID="EUR">${vatAmount}</cbc:TaxAmount>
+      <cac:TaxCategory>
+        <cbc:ID>${taxCategory}</cbc:ID>
+        <cbc:Percent>${vatRate}</cbc:Percent>
+        <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
+      </cac:TaxCategory>
+    </cac:TaxSubtotal>
+  </cac:TaxTotal>
+
+  <!-- Monetary totals -->
+  <cac:LegalMonetaryTotal>
+    <cbc:LineExtensionAmount currencyID="EUR">${subtotal}</cbc:LineExtensionAmount>
+    <cbc:TaxExclusiveAmount currencyID="EUR">${subtotal}</cbc:TaxExclusiveAmount>
+    <cbc:TaxInclusiveAmount currencyID="EUR">${total}</cbc:TaxInclusiveAmount>
+    <cbc:PayableAmount currencyID="EUR">${total}</cbc:PayableAmount>
+  </cac:LegalMonetaryTotal>
+
+  <!-- Invoice line -->
+  <cac:InvoiceLine>
+    <cbc:ID>1</cbc:ID>
+    <cbc:InvoicedQuantity unitCode="DAY">${days}</cbc:InvoicedQuantity>
+    <cbc:LineExtensionAmount currencyID="EUR">${subtotal}</cbc:LineExtensionAmount>
+    <cac:Item>
+      <cbc:Description>Consulting services — ${consultantName} (${periodFrom} – ${periodTo})</cbc:Description>
+      <cbc:Name>Consulting services</cbc:Name>
+      <cac:ClassifiedTaxCategory>
+        <cbc:ID>${taxCategory}</cbc:ID>
+        <cbc:Percent>${vatRate}</cbc:Percent>
+        <cac:TaxScheme><cbc:ID>VAT</cbc:ID></cac:TaxScheme>
+      </cac:ClassifiedTaxCategory>
+    </cac:Item>
+    <cac:Price>
+      <cbc:PriceAmount currencyID="EUR">${rate}</cbc:PriceAmount>
+    </cac:Price>
+  </cac:InvoiceLine>
+
+</Invoice>`;
+
+    res.setHeader('Content-Type', 'application/xml');
+    res.setHeader('Content-Disposition', `attachment; filename="${inv.invoice_number}-peppol.xml"`);
+    res.send(xml);
+
+  } catch (error) {
+    console.error('PEPPOL XML generation error:', error);
     res.status(500).json({ error: error.message });
   }
 });
