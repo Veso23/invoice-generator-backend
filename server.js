@@ -4520,6 +4520,9 @@ app.get('/api/invoices/:id/peppol-xml', authenticateToken, checkCompanyAccess, a
     const [clientScheme, ...clientRest] = (inv.client_peppol_id || '0208:UNKNOWN').split(':');
     const clientId = clientRest.join(':') || 'UNKNOWN';
 
+    const isCreditNote = inv.invoice_type_detail === 'credit_note';
+    const invoiceTypeCode = isCreditNote ? '381' : '380'; // 380=Invoice, 381=CreditNote
+
     const taxCategory = inv.vat_enabled ? 'S' : 'Z';
 
     const supplierLines = (inv.company_address || '').split('\n');
@@ -4535,7 +4538,7 @@ app.get('/api/invoices/:id/peppol-xml', authenticateToken, checkCompanyAccess, a
   <cbc:ID>${inv.invoice_number}</cbc:ID>
   <cbc:IssueDate>${invoiceDate}</cbc:IssueDate>
   <cbc:DueDate>${dueDate}</cbc:DueDate>
-  <cbc:InvoiceTypeCode>380</cbc:InvoiceTypeCode>
+  <cbc:InvoiceTypeCode>${invoiceTypeCode}</cbc:InvoiceTypeCode>
   <cbc:DocumentCurrencyCode>EUR</cbc:DocumentCurrencyCode>
   <cbc:BuyerReference>${inv.invoice_number}</cbc:BuyerReference>
 
@@ -4639,7 +4642,7 @@ app.get('/api/invoices/:id/peppol-xml', authenticateToken, checkCompanyAccess, a
 </Invoice>`;
 
     res.setHeader('Content-Type', 'application/xml');
-    res.setHeader('Content-Disposition', `attachment; filename="${inv.invoice_number}-peppol.xml"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${inv.invoice_number}-peppol${isCreditNote ? '-creditnote' : ''}.xml"`);
     res.send(xml);
 
   } catch (error) {
