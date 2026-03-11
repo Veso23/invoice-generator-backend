@@ -4131,24 +4131,165 @@ app.post('/api/invoices/:id/credit-note', authenticateToken, checkCompanyAccess,
 // PEPPOL ROUTES
 // ============================================================
 
-// POST /api/invoices/:id/send-peppol — send invoice via PEPPOL (mock mode)
+// ── PEPPOL HELPER: Build Storecove-compatible payload ─────────────────────────
+function buildStorecovePayload(invoice, companySettings) {
+  // Parse client PEPPOL ID: "0208:0123456789" → scheme="0208", id="0123456789"
+  const [clientScheme, ...clientIdParts] = (invoice.client_peppol_id || '').split(':');
+  const clientPeppolId = clientIdParts.join(':');
+
+  // Parse sender PEPPOL ID
+  const [senderScheme, ...senderIdParts] = (companySettings.peppol_sender_id || '').split(':');
+  const senderPeppolId = senderIdParts.join(':');
+
+  const invoiceDate = invoice.invoice_date
+    ? new Date(invoice.invoice_date).toISOString().split('T')[0]
+    : new Date().toISOString().split('T')[0];
+
+  const dueDate = invoice.due_date
+    ? new Date(invoice.due_date).toISOString().split('T')[0]
+    : null;
+
+  const subtotal   = parseFloat(invoice.subtotal    || 0);
+  const vatRate    = parseFloat(invoice.vat_rate     || 0);
+  const vatAmount  = parseFloat(invoice.vat_amount   || 0);
+  const total      = parseFloat(invoice.total_amount || 0);
+  const daysWorked = parseFloat(invoice.days_worked  || 0);
+  const dailyRate  = parseFloat(invoice.daily_rate   || 0);
+
+  // Parse period for description
+  const periodFrom = invoice.period_from
+    ? new Date(invoice.period_from).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+    : '';
+  const periodTo = invoice.period_to
+    ? new Date(invoice.period_to).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+    : '';
+
+  const consultantName = [invoice.consultant_first_name, invoice.consultant_last_name]
+    .filter(Boolean).join(' ') || 'Consultant';
+
+  const payload = {
+    routing: {
+      eidentifiers: [{ scheme: clientScheme || '0208', id: clientPeppolId || invoice.client_peppol_id }]
+    },
+    document: {
+      invoice: {
+        invoice_number:  invoice.invoice_number,
+        invoice_date:    invoiceDate,
+        currency:        'EUR',
+        tax_system:      'tax_line_percentages',
+
+        // ── Supplier (the agency) ─────────────────────────────────
+        accounting_supplier_party: {
+          party: {
+            company_name: companySettings.name || '',
+            address: {
+              street1:  (companySettings.address || '').split('\n')[0] || '',
+              city:     (companySettings.address || '').split('\n')[1] || '',
+              country:  'BE'
+            },
+            contact: { email: companySettings.company_email || '' }
+          },
+          public_identifiers: senderPeppolId
+            ? [{ scheme: senderScheme || '0208', id: senderPeppolId }]
+            : [],
+          tax_registration: companySettings.company_vat
+            ? [{ tax_id: companySettings.company_vat.replace(/\s/g,''), id_type: 'VAT' }]
+            : []
+        },
+
+        // ── Customer (the client) ─────────────────────────────────
+        accounting_customer_party: {
+          party: {
+            company_name: invoice.client_company_name || '',
+            address: {
+              street1:  (invoice.client_address || '').split('\n')[0] || '',
+              city:     (invoice.client_address || '').split('\n')[1] || '',
+              country:  'BE'
+            }
+          },
+          public_identifiers: [{ scheme: clientScheme || '0208', id: clientPeppolId || invoice.client_peppol_id }],
+          tax_registration: invoice.client_vat
+            ? [{ tax_id: invoice.client_vat.replace(/\s/g,''), id_type: 'VAT' }]
+            : []
+        },
+
+        // ── Invoice line ──────────────────────────────────────────
+        invoice_lines: [
+          {
+            line_id:     '1',
+            description: `Consulting services — ${consultantName} (${periodFrom} – ${periodTo})`,
+            quantity:     daysWorked,
+            unit_code:   'DAY',
+            unit_price:   dailyRate,
+            amount_excluding_vat: subtotal,
+            tax_percentage: vatRate
+          }
+        ],
+
+        // ── VAT totals ────────────────────────────────────────────
+        tax_subtotals: [
+          {
+            taxable_amount: subtotal,
+            tax_amount:     vatAmount,
+            tax_percentage: vatRate,
+            tax_category:   invoice.vat_enabled ? 'S' : 'Z'  // S=standard, Z=zero-rated
+          }
+        ],
+
+        // ── Totals ────────────────────────────────────────────────
+        amount_including_vat: total,
+
+        // ── Payment ───────────────────────────────────────────────
+        ...(companySettings.bank_iban ? {
+          payment_means_array: [{
+            payment_means_code: '30',  // 30 = credit transfer
+            financial_account: {
+              id: companySettings.bank_iban.replace(/\s/g,''),
+              name: companySettings.bank_name || '',
+              ...(companySettings.bank_swift ? { financial_institution: { id: companySettings.bank_swift } } : {})
+            }
+          }]
+        } : {}),
+
+        ...(dueDate ? { payment_terms_note: `Due: ${dueDate}` } : {})
+      }
+    }
+  };
+
+  return payload;
+}
+
+// POST /api/invoices/:id/send-peppol
 app.post('/api/invoices/:id/send-peppol', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
-    const PEPPOL_MOCK = process.env.PEPPOL_MOCK !== 'false'; // mock by default until provider configured
 
-    // Fetch invoice
+    // Fetch invoice + all related data needed for UBL
     const invoiceResult = await pool.query(
-      `SELECT i.*, 
-              con.first_name as consultant_first_name, con.last_name as consultant_last_name,
-              cli.company_name as client_company_name, cli.peppol_id as client_peppol_id,
-              cli.company_vat as client_vat,
-              co.peppol_enabled, co.peppol_provider, co.peppol_api_key, co.peppol_sender_id, co.peppol_environment
+      `SELECT i.*,
+              con.first_name  as consultant_first_name,
+              con.last_name   as consultant_last_name,
+              cli.company_name    as client_company_name,
+              cli.company_address as client_address,
+              cli.company_vat     as client_vat,
+              cli.peppol_id       as client_peppol_id,
+              co.name             as company_name,
+              co.address          as company_address,
+              co.company_vat,
+              co.company_email,
+              co.bank_iban,
+              co.bank_name,
+              co.bank_swift,
+              co.peppol_enabled,
+              co.peppol_provider,
+              co.peppol_api_key,
+              co.peppol_sender_id,
+              co.peppol_environment
        FROM invoices i
-       LEFT JOIN contracts c ON i.contract_id = c.id
+       LEFT JOIN contracts c   ON i.contract_id = c.id
        LEFT JOIN consultants con ON c.consultant_id = con.id
-       LEFT JOIN clients cli ON c.client_id = cli.id
-       LEFT JOIN companies co ON i.company_id = co.id
+       LEFT JOIN clients cli   ON c.client_id = cli.id
+       LEFT JOIN companies co  ON i.company_id = co.id
        WHERE i.id = $1 AND i.company_id = $2`,
       [id, req.companyId]
     );
@@ -4162,73 +4303,128 @@ app.post('/api/invoices/:id/send-peppol', authenticateToken, checkCompanyAccess,
     if (!invoice.peppol_enabled) {
       return res.status(400).json({ error: 'PEPPOL is not enabled for this company. Enable it in Settings first.' });
     }
-
-    const isMock = invoice.peppol_environment === 'mock';
-
-    // Only client invoices are sent via PEPPOL
     if (invoice.invoice_type !== 'client') {
       return res.status(400).json({ error: 'Only client invoices can be sent via PEPPOL' });
     }
-
-    // Must be sent or paid status
     if (!['sent', 'paid', 'draft'].includes(invoice.status)) {
       return res.status(400).json({ error: 'Invoice must be in draft, sent, or paid status' });
     }
-
-    // Must have client PEPPOL ID
     if (!invoice.client_peppol_id) {
-      return res.status(400).json({ 
-        error: 'Client does not have a PEPPOL ID. Please add it in the client profile first.',
+      return res.status(400).json({
+        error: 'Client has no PEPPOL ID. Edit the client profile first.',
         requiresPeppolId: true
       });
     }
 
-    if (isMock) {
-      // ── MOCK MODE ─────────────────────────────────────────────────────────
-      // Simulate network delay
-      await new Promise(r => setTimeout(r, 1500));
+    const env = invoice.peppol_environment || 'mock';
 
-      // 5% simulated failure rate for realism
+    // ── MOCK MODE ──────────────────────────────────────────────────────────────
+    if (env === 'mock') {
+      await new Promise(r => setTimeout(r, 1500));
       if (Math.random() < 0.05) {
-        await pool.query(
-          `UPDATE invoices SET peppol_status = 'failed', peppol_sent_at = NOW() WHERE id = $1`,
-          [id]
-        );
+        await pool.query(`UPDATE invoices SET peppol_status='failed', peppol_sent_at=NOW() WHERE id=$1`, [id]);
         return res.status(502).json({ error: 'PEPPOL delivery failed (mock simulation)' });
       }
-
-      const mockDocumentId = `MOCK-${Date.now()}-${Math.random().toString(36).substr(2, 8).toUpperCase()}`;
-
+      const mockDocId = `MOCK-${Date.now()}-${Math.random().toString(36).substr(2,8).toUpperCase()}`;
       await pool.query(
-        `UPDATE invoices 
-         SET peppol_status = 'delivered', peppol_sent_at = NOW(), peppol_document_id = $1 
-         WHERE id = $2`,
-        [mockDocumentId, id]
+        `UPDATE invoices SET peppol_status='delivered', peppol_sent_at=NOW(), peppol_document_id=$1 WHERE id=$2`,
+        [mockDocId, id]
       );
-
-      await logAudit(req.companyId, req.user.id, req.user.email,
-        'PEPPOL_SENT', 'invoice', parseInt(id),
-        { invoice_number: invoice.invoice_number, mock: true, document_id: mockDocumentId });
-
-      return res.json({ 
-        success: true, 
-        mock: true,
-        message: `Invoice ${invoice.invoice_number} delivered via PEPPOL (mock)`,
-        document_id: mockDocumentId,
-        peppol_id: invoice.client_peppol_id
-      });
-
-    } else {
-      // ── REAL PROVIDER MODE ─────────────────────────────────────────────────
-      // TODO: Replace with actual provider API call (Billit / Storecove / Advalvas)
-      // Example Storecove:
-      // const response = await fetch('https://api.storecove.com/api/v2/document_submissions', {
-      //   method: 'POST',
-      //   headers: { 'Authorization': `Bearer ${process.env.PEPPOL_API_KEY}`, 'Content-Type': 'application/json' },
-      //   body: JSON.stringify(buildStorecovePayload(invoice))
-      // });
-      return res.status(501).json({ error: 'Real PEPPOL provider not configured yet. Set PEPPOL_MOCK=true or configure a provider.' });
+      await logAudit(req.companyId, req.user.id, req.user.email, 'PEPPOL_SENT', 'invoice', parseInt(id),
+        { invoice_number: invoice.invoice_number, mock: true, document_id: mockDocId });
+      return res.json({ success: true, mock: true, message: `Invoice ${invoice.invoice_number} delivered via PEPPOL (mock)`, document_id: mockDocId });
     }
+
+    // ── SANDBOX / PRODUCTION MODE (Storecove) ──────────────────────────────────
+    if (env === 'sandbox' || env === 'production') {
+      if (!invoice.peppol_api_key) {
+        return res.status(400).json({ error: 'No API key configured. Add it in Settings → PEPPOL.' });
+      }
+      if (!invoice.peppol_sender_id) {
+        return res.status(400).json({ error: 'No Sender PEPPOL ID configured. Add it in Settings → PEPPOL.' });
+      }
+
+      const provider = invoice.peppol_provider || 'storecove';
+
+      if (provider === 'storecove') {
+        const baseUrl = 'https://api.storecove.com/api/v2';
+
+        // Build payload
+        const companySettings = {
+          name:          invoice.company_name,
+          address:       invoice.company_address,
+          company_vat:   invoice.company_vat,
+          company_email: invoice.company_email,
+          bank_iban:     invoice.bank_iban,
+          bank_name:     invoice.bank_name,
+          bank_swift:    invoice.bank_swift,
+          peppol_sender_id: invoice.peppol_sender_id
+        };
+        const payload = buildStorecovePayload(invoice, companySettings);
+
+        // In sandbox mode — add test flag
+        if (env === 'sandbox') {
+          payload.test = true;
+        }
+
+        console.log('PEPPOL Storecove payload:', JSON.stringify(payload, null, 2));
+
+        const response = await fetch(`${baseUrl}/document_submissions`, {
+          method:  'POST',
+          headers: {
+            'Authorization': `Bearer ${invoice.peppol_api_key}`,
+            'Content-Type':  'application/json',
+            'Accept':        'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+
+        const responseText = await response.text();
+        let responseData = {};
+        try { responseData = JSON.parse(responseText); } catch(e) { responseData = { raw: responseText }; }
+
+        console.log('Storecove response:', response.status, responseText);
+
+        if (!response.ok) {
+          await pool.query(
+            `UPDATE invoices SET peppol_status='failed', peppol_sent_at=NOW() WHERE id=$1`, [id]
+          );
+          await logAudit(req.companyId, req.user.id, req.user.email, 'PEPPOL_FAILED', 'invoice', parseInt(id),
+            { invoice_number: invoice.invoice_number, error: responseData, env });
+          return res.status(response.status).json({
+            error: responseData.error || responseData.message || 'Storecove API error',
+            details: responseData,
+            raw: responseText
+          });
+        }
+
+        const documentId = responseData.guid || responseData.id || `SC-${Date.now()}`;
+        await pool.query(
+          `UPDATE invoices SET peppol_status='pending', peppol_sent_at=NOW(), peppol_document_id=$1 WHERE id=$2`,
+          [documentId, id]
+        );
+        await logAudit(req.companyId, req.user.id, req.user.email, 'PEPPOL_SENT', 'invoice', parseInt(id),
+          { invoice_number: invoice.invoice_number, document_id: documentId, env, provider });
+
+        return res.json({
+          success:     true,
+          mock:        false,
+          env,
+          provider,
+          message:     `Invoice ${invoice.invoice_number} submitted to PEPPOL via Storecove`,
+          document_id: documentId,
+          storecove:   responseData
+        });
+
+      } else {
+        // Other providers (Billit, Advalvas, etc.) — stub
+        return res.status(501).json({
+          error: `Provider '${provider}' not yet implemented. Currently supported: storecove`
+        });
+      }
+    }
+
+    return res.status(400).json({ error: `Unknown PEPPOL environment: ${env}` });
 
   } catch (error) {
     console.error('PEPPOL send error:', error);
