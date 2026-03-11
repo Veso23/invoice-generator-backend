@@ -4270,7 +4270,9 @@ app.get('/api/peppol/lookup', authenticateToken, async (req, res) => {
   const { id } = req.query;
   if (!id) return res.status(400).json({ error: 'Missing id parameter' });
   try {
-    const url = `https://directory.peppol.eu/search/1.0/json?participant=${encodeURIComponent(id)}&resultCount=1`;
+    // PEPPOL Directory requires format: iso6523-actorid-upis::SCHEME:ID
+    const participant = `iso6523-actorid-upis::${id}`;
+    const url = `https://directory.peppol.eu/search/1.0/json?participant=${encodeURIComponent(participant)}&resultCount=1`;
     const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
     if (!response.ok) return res.status(502).json({ error: `Directory returned ${response.status}` });
     const data = await response.json();
