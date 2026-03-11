@@ -4456,6 +4456,7 @@ app.patch('/api/invoices/:id/peppol-status', authenticateToken, requireAdmin, ch
 app.get('/api/invoices/:id/peppol-xml', authenticateToken, checkCompanyAccess, async (req, res) => {
   try {
     const { id } = req.params;
+    console.log('PEPPOL XML request - id:', id, 'companyId:', req.companyId, 'userId:', req.user?.id);
 
     const invoiceResult = await pool.query(
       `SELECT i.*,
@@ -4483,12 +4484,9 @@ app.get('/api/invoices/:id/peppol-xml', authenticateToken, checkCompanyAccess, a
     );
 
     if (invoiceResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Invoice not found' });
+      console.log('PEPPOL XML - Invoice not found - id:', id, 'companyId:', req.companyId);
+      return res.status(404).json({ error: 'Invoice not found', debug: { id, companyId: req.companyId } });
     }
-
-    const inv = invoiceResult.rows[0];
-
-    const invoiceDate = inv.invoice_date
       ? new Date(inv.invoice_date).toISOString().split('T')[0]
       : new Date().toISOString().split('T')[0];
     const dueDate = inv.due_date
