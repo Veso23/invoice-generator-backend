@@ -1058,7 +1058,7 @@ app.put('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req, r
     const { id } = req.params;
     const { 
       firstName, lastName, companyName, companyAddress, companyVat, 
-      phone, email, iban, swift, clientContractId 
+      phone, email, iban, swift, clientContractId, peppolId
     } = req.body;
 
     // Verify client belongs to company (exclude soft-deleted)
@@ -1089,9 +1089,10 @@ app.put('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req, r
     const result = await pool.query(
       `UPDATE clients 
        SET first_name = $1, last_name = $2, company_name = $3, company_address = $4, 
-           company_vat = $5, phone = $6, email = $7, iban = $8, swift = $9, client_contract_id = $10
-       WHERE id = $11 AND company_id = $12 AND deleted_at IS NULL RETURNING *`,
-      [firstName, lastName, companyName, companyAddress, companyVat, phone, email, iban, swift, clientContractId, id, req.companyId]
+           company_vat = $5, phone = $6, email = $7, iban = $8, swift = $9, 
+           client_contract_id = $10, peppol_id = $11
+       WHERE id = $12 AND company_id = $13 AND deleted_at IS NULL RETURNING *`,
+      [firstName, lastName, companyName, companyAddress, companyVat, phone, email, iban, swift, clientContractId, peppolId || null, id, req.companyId]
     );
     
     res.json(result.rows[0]);
@@ -2652,7 +2653,8 @@ app.get('/api/company/settings', authenticateToken, checkCompanyAccess, async (r
               bank_name, bank_iban, bank_swift, bank_address,
               smtp_host, smtp_port, smtp_username, smtp_password,
               smtp_from_email, smtp_from_name, smtp_secure,
-              COALESCE(invoice_template, 'classic') as invoice_template
+              COALESCE(invoice_template, 'classic') as invoice_template,
+              peppol_enabled, peppol_provider, peppol_sender_id, peppol_environment
        FROM companies WHERE id = $1`,
       [req.companyId]
     );
@@ -2677,7 +2679,8 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
       bank_name, bank_iban, bank_swift, bank_address,
       smtp_host, smtp_port, smtp_username, smtp_password,
       smtp_from_email, smtp_from_name, smtp_secure,
-      invoice_template, contract_renewal_alert_days, payment_terms_days
+      invoice_template, contract_renewal_alert_days, payment_terms_days,
+      peppol_enabled, peppol_provider, peppol_api_key, peppol_sender_id, peppol_environment
     } = req.body;
     
     const result = await pool.query(
@@ -2687,8 +2690,10 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
            bank_name = $9, bank_iban = $10, bank_swift = $11, bank_address = $12,
            smtp_host = $13, smtp_port = $14, smtp_username = $15, smtp_password = $16,
            smtp_from_email = $17, smtp_from_name = $18, smtp_secure = $19, 
-           invoice_template = $20, contract_renewal_alert_days = $21, payment_terms_days = $22, updated_at = NOW()
-       WHERE id = $23
+           invoice_template = $20, contract_renewal_alert_days = $21, payment_terms_days = $22,
+           peppol_enabled = $23, peppol_provider = $24, peppol_api_key = $25,
+           peppol_sender_id = $26, peppol_environment = $27, updated_at = NOW()
+       WHERE id = $28
        RETURNING *`,
       [name, address, representative_name, timesheet_deadline_day, 
        company_vat, company_email, timesheet_email, default_vat_rate,
@@ -2698,6 +2703,11 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
        invoice_template || 'classic',
        contract_renewal_alert_days != null ? parseInt(contract_renewal_alert_days) : 30,
        payment_terms_days != null ? parseInt(payment_terms_days) : 30,
+       peppol_enabled === true || peppol_enabled === 'true',
+       peppol_provider || null,
+       peppol_api_key || null,
+       peppol_sender_id || null,
+       peppol_environment || 'mock',
        req.companyId]
     );
     
@@ -3967,6 +3977,33 @@ app.patch('/api/consultants/:id/reminder-toggle', authenticateToken, requireAdmi
   }
 })();
 
+// Auto-migrate: PEPPOL columns
+(async () => {
+  try {
+    await pool.query(`
+      ALTER TABLE invoices
+        ADD COLUMN IF NOT EXISTS peppol_status VARCHAR(50) DEFAULT NULL,
+        ADD COLUMN IF NOT EXISTS peppol_sent_at TIMESTAMPTZ DEFAULT NULL,
+        ADD COLUMN IF NOT EXISTS peppol_document_id VARCHAR(255) DEFAULT NULL
+    `);
+    await pool.query(`
+      ALTER TABLE clients
+        ADD COLUMN IF NOT EXISTS peppol_id VARCHAR(100) DEFAULT NULL
+    `);
+    await pool.query(`
+      ALTER TABLE companies
+        ADD COLUMN IF NOT EXISTS peppol_enabled BOOLEAN DEFAULT false,
+        ADD COLUMN IF NOT EXISTS peppol_provider VARCHAR(50) DEFAULT NULL,
+        ADD COLUMN IF NOT EXISTS peppol_api_key VARCHAR(500) DEFAULT NULL,
+        ADD COLUMN IF NOT EXISTS peppol_sender_id VARCHAR(100) DEFAULT NULL,
+        ADD COLUMN IF NOT EXISTS peppol_environment VARCHAR(20) DEFAULT 'mock'
+    `);
+    console.log('✅ PEPPOL columns ready');
+  } catch (err) {
+    console.error('Migration warning (PEPPOL columns):', err.message);
+  }
+})();
+
 // POST /api/invoices/:id/credit-note — create credit note for an invoice
 app.post('/api/invoices/:id/credit-note', authenticateToken, checkCompanyAccess, async (req, res) => {
   const client = await pool.connect();
@@ -4087,6 +4124,134 @@ app.post('/api/invoices/:id/credit-note', authenticateToken, checkCompanyAccess,
     res.status(500).json({ error: error.message });
   } finally {
     client.release();
+  }
+});
+
+// ============================================================
+// PEPPOL ROUTES
+// ============================================================
+
+// POST /api/invoices/:id/send-peppol — send invoice via PEPPOL (mock mode)
+app.post('/api/invoices/:id/send-peppol', authenticateToken, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const PEPPOL_MOCK = process.env.PEPPOL_MOCK !== 'false'; // mock by default until provider configured
+
+    // Fetch invoice
+    const invoiceResult = await pool.query(
+      `SELECT i.*, 
+              con.first_name as consultant_first_name, con.last_name as consultant_last_name,
+              cli.company_name as client_company_name, cli.peppol_id as client_peppol_id,
+              cli.company_vat as client_vat,
+              co.peppol_enabled, co.peppol_provider, co.peppol_api_key, co.peppol_sender_id, co.peppol_environment
+       FROM invoices i
+       LEFT JOIN contracts c ON i.contract_id = c.id
+       LEFT JOIN consultants con ON c.consultant_id = con.id
+       LEFT JOIN clients cli ON c.client_id = cli.id
+       LEFT JOIN companies co ON i.company_id = co.id
+       WHERE i.id = $1 AND i.company_id = $2`,
+      [id, req.companyId]
+    );
+
+    if (invoiceResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    const invoice = invoiceResult.rows[0];
+
+    if (!invoice.peppol_enabled) {
+      return res.status(400).json({ error: 'PEPPOL is not enabled for this company. Enable it in Settings first.' });
+    }
+
+    const isMock = invoice.peppol_environment === 'mock';
+
+    // Only client invoices are sent via PEPPOL
+    if (invoice.invoice_type !== 'client') {
+      return res.status(400).json({ error: 'Only client invoices can be sent via PEPPOL' });
+    }
+
+    // Must be sent or paid status
+    if (!['sent', 'paid', 'draft'].includes(invoice.status)) {
+      return res.status(400).json({ error: 'Invoice must be in draft, sent, or paid status' });
+    }
+
+    // Must have client PEPPOL ID
+    if (!invoice.client_peppol_id) {
+      return res.status(400).json({ 
+        error: 'Client does not have a PEPPOL ID. Please add it in the client profile first.',
+        requiresPeppolId: true
+      });
+    }
+
+    if (isMock) {
+      // ── MOCK MODE ─────────────────────────────────────────────────────────
+      // Simulate network delay
+      await new Promise(r => setTimeout(r, 1500));
+
+      // 5% simulated failure rate for realism
+      if (Math.random() < 0.05) {
+        await pool.query(
+          `UPDATE invoices SET peppol_status = 'failed', peppol_sent_at = NOW() WHERE id = $1`,
+          [id]
+        );
+        return res.status(502).json({ error: 'PEPPOL delivery failed (mock simulation)' });
+      }
+
+      const mockDocumentId = `MOCK-${Date.now()}-${Math.random().toString(36).substr(2, 8).toUpperCase()}`;
+
+      await pool.query(
+        `UPDATE invoices 
+         SET peppol_status = 'delivered', peppol_sent_at = NOW(), peppol_document_id = $1 
+         WHERE id = $2`,
+        [mockDocumentId, id]
+      );
+
+      await logAudit(req.companyId, req.user.id, req.user.email,
+        'PEPPOL_SENT', 'invoice', parseInt(id),
+        { invoice_number: invoice.invoice_number, mock: true, document_id: mockDocumentId });
+
+      return res.json({ 
+        success: true, 
+        mock: true,
+        message: `Invoice ${invoice.invoice_number} delivered via PEPPOL (mock)`,
+        document_id: mockDocumentId,
+        peppol_id: invoice.client_peppol_id
+      });
+
+    } else {
+      // ── REAL PROVIDER MODE ─────────────────────────────────────────────────
+      // TODO: Replace with actual provider API call (Billit / Storecove / Advalvas)
+      // Example Storecove:
+      // const response = await fetch('https://api.storecove.com/api/v2/document_submissions', {
+      //   method: 'POST',
+      //   headers: { 'Authorization': `Bearer ${process.env.PEPPOL_API_KEY}`, 'Content-Type': 'application/json' },
+      //   body: JSON.stringify(buildStorecovePayload(invoice))
+      // });
+      return res.status(501).json({ error: 'Real PEPPOL provider not configured yet. Set PEPPOL_MOCK=true or configure a provider.' });
+    }
+
+  } catch (error) {
+    console.error('PEPPOL send error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PATCH /api/invoices/:id/peppol-status — manual status override (for testing)
+app.patch('/api/invoices/:id/peppol-status', authenticateToken, requireAdmin, checkCompanyAccess, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body; // pending | delivered | failed | null
+    const allowed = ['pending', 'delivered', 'failed', null];
+    if (!allowed.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+    const result = await pool.query(
+      `UPDATE invoices SET peppol_status = $1 WHERE id = $2 AND company_id = $3 RETURNING *`,
+      [status, id, req.companyId]
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
