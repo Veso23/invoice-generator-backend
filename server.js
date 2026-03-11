@@ -1061,7 +1061,7 @@ app.put('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req, r
     const { id } = req.params;
     const { 
       firstName, lastName, companyName, companyAddress, companyVat, 
-      phone, email, iban, swift, clientContractId, peppolId
+      phone, email, iban, swift, clientContractId, peppolId, countryCode
     } = req.body;
 
     // Verify client belongs to company (exclude soft-deleted)
@@ -1093,9 +1093,9 @@ app.put('/api/clients/:id', authenticateToken, checkCompanyAccess, async (req, r
       `UPDATE clients 
        SET first_name = $1, last_name = $2, company_name = $3, company_address = $4, 
            company_vat = $5, phone = $6, email = $7, iban = $8, swift = $9, 
-           client_contract_id = $10, peppol_id = $11
-       WHERE id = $12 AND company_id = $13 AND deleted_at IS NULL RETURNING *`,
-      [firstName, lastName, companyName, companyAddress, companyVat, phone, email, iban, swift, clientContractId, peppolId || null, id, req.companyId]
+           client_contract_id = $10, peppol_id = $11, country_code = $12
+       WHERE id = $13 AND company_id = $14 AND deleted_at IS NULL RETURNING *`,
+      [firstName, lastName, companyName, companyAddress, companyVat, phone, email, iban, swift, clientContractId, peppolId || null, countryCode || null, id, req.companyId]
     );
     
     res.json(result.rows[0]);
@@ -3991,7 +3991,8 @@ app.patch('/api/consultants/:id/reminder-toggle', authenticateToken, requireAdmi
     `);
     await pool.query(`
       ALTER TABLE clients
-        ADD COLUMN IF NOT EXISTS peppol_id VARCHAR(100) DEFAULT NULL
+        ADD COLUMN IF NOT EXISTS peppol_id VARCHAR(100) DEFAULT NULL,
+        ADD COLUMN IF NOT EXISTS country_code CHAR(2) DEFAULT NULL
     `);
     await pool.query(`
       ALTER TABLE companies
@@ -4467,6 +4468,7 @@ app.get('/api/invoices/:id/peppol-xml', authenticateToken, checkCompanyAccess, a
               cli.company_address as client_address,
               cli.company_vat     as client_vat,
               cli.peppol_id       as client_peppol_id,
+              cli.country_code    as client_country_code,
               co.name             as company_name,
               co.address          as company_address,
               co.company_vat,
@@ -4540,9 +4542,8 @@ app.get('/api/invoices/:id/peppol-xml', authenticateToken, checkCompanyAccess, a
       <cbc:EndpointID schemeID="${senderScheme}">${senderId}</cbc:EndpointID>
       <cac:PartyName><cbc:Name>${inv.company_name || ''}</cbc:Name></cac:PartyName>
       <cac:PostalAddress>
-        <cbc:StreetName>${supplierLines[0] || ''}</cbc:StreetName>
-        <cbc:CityName>${supplierLines[1] || ''}</cbc:CityName>
-        <cbc:CountrySubentity></cbc:CountrySubentity>
+        ${supplierLines[0] ? `<cbc:StreetName>${supplierLines[0]}</cbc:StreetName>` : ''}
+        ${supplierLines[1] ? `<cbc:CityName>${supplierLines[1]}</cbc:CityName>` : ''}
         <cac:Country><cbc:IdentificationCode>BE</cbc:IdentificationCode></cac:Country>
       </cac:PostalAddress>
       <cac:PartyTaxScheme>
@@ -4563,9 +4564,9 @@ app.get('/api/invoices/:id/peppol-xml', authenticateToken, checkCompanyAccess, a
       <cbc:EndpointID schemeID="${clientScheme}">${clientId}</cbc:EndpointID>
       <cac:PartyName><cbc:Name>${inv.client_company_name || ''}</cbc:Name></cac:PartyName>
       <cac:PostalAddress>
-        <cbc:StreetName>${clientLines[0] || ''}</cbc:StreetName>
-        <cbc:CityName>${clientLines[1] || ''}</cbc:CityName>
-        <cac:Country><cbc:IdentificationCode>BE</cbc:IdentificationCode></cac:Country>
+        ${clientLines[0] ? `<cbc:StreetName>${clientLines[0]}</cbc:StreetName>` : ''}
+        ${clientLines[1] ? `<cbc:CityName>${clientLines[1]}</cbc:CityName>` : ''}
+        <cac:Country><cbc:IdentificationCode>${inv.client_country_code || 'BE'}</cbc:IdentificationCode></cac:Country>
       </cac:PostalAddress>
       <cac:PartyTaxScheme>
         <cbc:CompanyID>${(inv.client_vat || '').replace(/\s/g,'')}</cbc:CompanyID>
