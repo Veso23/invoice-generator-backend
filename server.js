@@ -4036,6 +4036,41 @@ app.patch('/api/consultants/:id/reminder-toggle', authenticateToken, requireAdmi
   }
 })();
 
+// Auto-migrate: Performance indexes
+(async () => {
+  try {
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_invoices_company_id       ON invoices(company_id);
+      CREATE INDEX IF NOT EXISTS idx_invoices_company_status   ON invoices(company_id, status);
+      CREATE INDEX IF NOT EXISTS idx_invoices_company_date     ON invoices(company_id, invoice_date);
+      CREATE INDEX IF NOT EXISTS idx_invoices_company_type     ON invoices(company_id, invoice_type);
+      CREATE INDEX IF NOT EXISTS idx_invoices_contract_id      ON invoices(contract_id);
+      CREATE INDEX IF NOT EXISTS idx_invoices_timesheet_id     ON invoices(timesheet_id);
+      CREATE INDEX IF NOT EXISTS idx_invoices_original_id      ON invoices(original_invoice_id);
+      CREATE INDEX IF NOT EXISTS idx_invoices_type_detail      ON invoices(company_id, invoice_type_detail);
+
+      CREATE INDEX IF NOT EXISTS idx_timesheets_company_id     ON automation_logs(company_id);
+      CREATE INDEX IF NOT EXISTS idx_timesheets_status         ON automation_logs(company_id, status);
+
+      CREATE INDEX IF NOT EXISTS idx_contracts_company_id      ON contracts(company_id);
+      CREATE INDEX IF NOT EXISTS idx_contracts_consultant_id   ON contracts(consultant_id);
+      CREATE INDEX IF NOT EXISTS idx_contracts_client_id       ON contracts(client_id);
+
+      CREATE INDEX IF NOT EXISTS idx_consultants_company_id    ON consultants(company_id);
+      CREATE INDEX IF NOT EXISTS idx_clients_company_id        ON clients(company_id);
+
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_company_id     ON audit_logs(company_id);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at     ON audit_logs(company_id, created_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_users_company_id          ON users(company_id);
+      CREATE INDEX IF NOT EXISTS idx_users_email               ON users(email);
+    `);
+    console.log('✅ Performance indexes ready');
+  } catch (err) {
+    console.error('Migration warning (indexes):', err.message);
+  }
+})();
+
 // POST /api/invoices/:id/credit-note — create credit note for an invoice
 app.post('/api/invoices/:id/credit-note', authenticateToken, checkCompanyAccess, async (req, res) => {
   const client = await pool.connect();
