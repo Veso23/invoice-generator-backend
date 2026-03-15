@@ -54,7 +54,8 @@ const DEFAULT_PERMISSIONS = {
 
 
 app.use(compression());
-app.use(morgan('combined'));
+// Logging — detailed in dev, minimal in production
+app.use(morgan(process.env.NODE_ENV === 'production' ? 'tiny' : 'combined'));
 
 // CORS configuration - MUST BE BEFORE OTHER MIDDLEWARE
 app.use(cors({
@@ -109,17 +110,19 @@ app.use('/api/register', authLimiter);
 // Database connection with Supabase
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false
-  },
-  // Ensure UTF-8 encoding for Cyrillic and other characters
-  client_encoding: 'UTF8'
+  ssl: { rejectUnauthorized: false },
+  client_encoding: 'UTF8',
+  max: 20,                  // max connections (Supabase Pro allows 60, free allows 15)
+  idleTimeoutMillis: 30000, // close idle connections after 30s
+  connectionTimeoutMillis: 5000 // fail fast if can't connect in 5s
 });
 
 // Set encoding on each new connection
 pool.on('connect', (client) => {
   client.query('SET client_encoding = UTF8');
-  console.log('✅ Connected to Supabase database (UTF-8)');
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('✅ Connected to Supabase database (UTF-8)');
+  }
 });
 
 pool.on('error', (err) => {
