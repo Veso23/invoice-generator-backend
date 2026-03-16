@@ -2579,8 +2579,9 @@ app.post('/api/n8n/automation-data', async (req, res) => {
 
     res.status(201).json(result.rows[0]);
   } catch (error) {
-    console.error('N8N webhook error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error('N8N webhook error:', error.message);
+    console.error('N8N webhook error detail:', error.detail || error.code || '');
+    res.status(500).json({ error: 'Internal server error', detail: error.message });
   }
 });
 // Get automation logs
