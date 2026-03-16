@@ -2553,12 +2553,12 @@ app.post('/api/n8n/automation-data', async (req, res) => {
 
     const result = await pool.query(`
       INSERT INTO automation_logs 
-      (timestamp, sender_email, recipient_email, person_name, month, email_hours, email_days,
+      (sender_email, recipient_email, person_name, month, email_hours, email_days,
        pdf_hours, pdf_days, hours_diff, days_diff, hours_status, days_status, 
        status, company_id, timesheet_file_url, additional_files, flagged_for_review, notes, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW())
       RETURNING *
-    `, [timestamp, senderEmail, recipientEmail, personName, month, emailHours, emailDays,
+    `, [senderEmail, recipientEmail, personName, month, emailHours, emailDays,
         pdfHours, pdfDays, hoursDiff, daysDiff, hoursStatus, daysStatus, 
         status, companyId, timesheetFileUrl || null, JSON.stringify(additionalFilesArr),
         flaggedForReview === 'true' || flaggedForReview === true || false,
