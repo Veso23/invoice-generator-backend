@@ -2502,7 +2502,8 @@ app.post('/api/n8n/automation-data', async (req, res) => {
       timestamp, senderEmail, recipientEmail, personName, month,
       emailHours, emailDays, pdfHours, pdfDays,
       hoursDiff, daysDiff, hoursStatus, daysStatus, status,
-      timesheetFileUrl, companyId: directCompanyId
+      timesheetFileUrl, companyId: directCompanyId,
+      additionalFiles, flaggedForReview, notes
     } = req.body;
 
     // ✅ Priority 1: Use companyId directly from N8N payload (most reliable)
@@ -2514,7 +2515,6 @@ app.post('/api/n8n/automation-data', async (req, res) => {
         'SELECT id FROM companies WHERE LOWER(timesheet_email) = LOWER($1)',
         [recipientEmail.trim()]
       );
-      
       if (companyResult.rows.length > 0) {
         companyId = companyResult.rows[0].id;
       } else {
@@ -2543,16 +2543,26 @@ app.post('/api/n8n/automation-data', async (req, res) => {
       });
     }
 
+    // Normalize additionalFiles — accept array or JSON string
+    let additionalFilesArr = [];
+    if (Array.isArray(additionalFiles)) {
+      additionalFilesArr = additionalFiles.filter(Boolean);
+    } else if (typeof additionalFiles === 'string') {
+      try { additionalFilesArr = JSON.parse(additionalFiles).filter(Boolean); } catch {}
+    }
+
     const result = await pool.query(`
       INSERT INTO automation_logs 
       (timestamp, sender_email, recipient_email, person_name, month, email_hours, email_days,
        pdf_hours, pdf_days, hours_diff, days_diff, hours_status, days_status, 
-       status, company_id, timesheet_file_url, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW())
+       status, company_id, timesheet_file_url, additional_files, flagged_for_review, notes, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
       RETURNING *
     `, [timestamp, senderEmail, recipientEmail, personName, month, emailHours, emailDays,
         pdfHours, pdfDays, hoursDiff, daysDiff, hoursStatus, daysStatus, 
-        status, companyId, timesheetFileUrl || null]);
+        status, companyId, timesheetFileUrl || null, JSON.stringify(additionalFilesArr),
+        flaggedForReview === 'true' || flaggedForReview === true || false,
+        notes || null]);
 
     // Send confirmation email to consultant (non-blocking)
     if (senderEmail && month) {
@@ -2560,7 +2570,7 @@ app.post('/api/n8n/automation-data', async (req, res) => {
         const settingsResult = await pool.query('SELECT * FROM companies WHERE id = $1', [companyId]);
         if (settingsResult.rows.length > 0) {
           await sendTimesheetConfirmation(senderEmail, personName, month, settingsResult.rows[0]);
-          console.log('📧 Confirmation email sent to:', senderEmail);
+          if (process.env.NODE_ENV !== 'production') console.log('📧 Confirmation email sent to:', senderEmail);
         }
       } catch (emailErr) {
         console.error('Confirmation email failed (non-critical):', emailErr.message);
@@ -4039,7 +4049,18 @@ app.patch('/api/consultants/:id/reminder-toggle', authenticateToken, requireAdmi
   }
 })();
 
-// Auto-migrate: Performance indexes
+// Auto-migrate: additional_files column for multiple attachments
+(async () => {
+  try {
+    await pool.query(`
+      ALTER TABLE automation_logs
+        ADD COLUMN IF NOT EXISTS additional_files JSONB DEFAULT '[]'
+    `);
+    console.log('✅ additional_files column ready');
+  } catch (err) {
+    console.error('Migration warning (additional_files):', err.message);
+  }
+})();
 (async () => {
   try {
     await pool.query(`
