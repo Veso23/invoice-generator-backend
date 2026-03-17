@@ -38,7 +38,8 @@ const DEFAULT_PERMISSIONS = {
     can_view_timesheets: true,
     can_view_invoices: true,
     can_manage_users: true,
-    can_delete_timesheets: true
+    can_delete_timesheets: true,
+    can_create_credit_note: true
   },
   operator: {
     can_view_dashboard: false,
@@ -48,7 +49,8 @@ const DEFAULT_PERMISSIONS = {
     can_view_timesheets: true,
     can_view_invoices: true,
     can_manage_users: false,
-    can_delete_timesheets: false
+    can_delete_timesheets: false,
+    can_create_credit_note: false
   }
 };
 
@@ -4101,6 +4103,14 @@ app.post('/api/invoices/:id/credit-note', authenticateToken, checkCompanyAccess,
   const client = await pool.connect();
   try {
     const { id } = req.params;
+
+    // Permission check
+    if (req.user.role !== 'admin' && req.user.role !== 'super_admin') {
+      const perms = req.user.permissions || {};
+      if (!perms.can_create_credit_note) {
+        return res.status(403).json({ error: 'You do not have permission to create credit notes.' });
+      }
+    }
 
     // Fetch original invoice with full join data
     const origResult = await client.query(`
