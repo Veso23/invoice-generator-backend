@@ -2697,7 +2697,8 @@ app.get('/api/company/settings', authenticateToken, checkCompanyAccess, async (r
               smtp_host, smtp_port, smtp_username, smtp_password,
               smtp_from_email, smtp_from_name, smtp_secure,
               COALESCE(invoice_template, 'classic') as invoice_template,
-              peppol_enabled, peppol_provider, peppol_sender_id, peppol_environment, country_code, peppol_legal_entity_id
+              peppol_enabled, peppol_provider, peppol_sender_id, peppol_environment, country_code, peppol_legal_entity_id,
+              (peppol_api_key IS NOT NULL AND peppol_api_key != '') as peppol_api_key_set
        FROM companies WHERE id = $1`,
       [req.companyId]
     );
@@ -2734,7 +2735,8 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
            smtp_host = $13, smtp_port = $14, smtp_username = $15, smtp_password = $16,
            smtp_from_email = $17, smtp_from_name = $18, smtp_secure = $19, 
            invoice_template = $20, contract_renewal_alert_days = $21, payment_terms_days = $22,
-           peppol_enabled = $23, peppol_provider = $24, peppol_api_key = $25,
+           peppol_enabled = $23, peppol_provider = $24,
+           peppol_api_key = CASE WHEN $25::text IS NOT NULL AND $25::text != '' THEN $25::text ELSE peppol_api_key END,
            peppol_sender_id = $26, peppol_environment = $27, country_code = $28,
            peppol_legal_entity_id = $29, updated_at = NOW()
        WHERE id = $30
@@ -2749,7 +2751,7 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
        payment_terms_days != null ? parseInt(payment_terms_days) : 30,
        peppol_enabled === true || peppol_enabled === 'true',
        peppol_provider || null,
-       peppol_api_key || null,
+       peppol_api_key || null,  // only update if provided
        peppol_sender_id || null,
        peppol_environment || 'mock',
        country_code || 'BE',
