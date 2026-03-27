@@ -4351,7 +4351,11 @@ function buildStorecovePayload(invoice, companySettings) {
             unit_code:   'DAY',
             unit_price:   dailyRate,
             amount_excluding_vat: subtotal,
-            tax_percentage: vatRate
+            tax: {
+              percentage: vatRate,
+              country:    companySettings.country_code || 'BE',
+              category:   invoice.vat_enabled ? 'standard' : 'zero_rated'
+            }
           }
         ],
 
@@ -4360,8 +4364,8 @@ function buildStorecovePayload(invoice, companySettings) {
           {
             taxable_amount: subtotal,
             tax_amount:     vatAmount,
-            tax_percentage: vatRate,
-            tax_category:   invoice.vat_enabled ? 'S' : 'Z',
+            percentage:     vatRate,
+            tax_category:   invoice.vat_enabled ? 'standard' : 'zero_rated',
             country:        companySettings.country_code || 'BE'
           }
         ],
