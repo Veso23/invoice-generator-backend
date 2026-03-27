@@ -4372,7 +4372,7 @@ function buildStorecovePayload(invoice, companySettings) {
         // ── Payment ───────────────────────────────────────────────
         ...(companySettings.bank_iban ? {
           payment_means_array: [{
-            code: '30',
+            code: 'credit_transfer',
             financial_account: {
               id: companySettings.bank_iban.replace(/\s/g,''),
               name: companySettings.bank_name || '',
