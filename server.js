@@ -4350,7 +4350,7 @@ function buildStorecovePayload(invoice, companySettings) {
             quantity:     daysWorked,
             unit_code:   'DAY',
             unit_price:   dailyRate,
-            amount_excluding_vat: subtotal,
+            amount_excluding_vat: Math.round(dailyRate * daysWorked * 100) / 100,
             tax: {
               percentage: vatRate,
               country:    companySettings.country_code || 'BE',
