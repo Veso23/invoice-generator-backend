@@ -4295,11 +4295,12 @@ function buildStorecovePayload(invoice, companySettings) {
     .filter(Boolean).join(' ') || 'Consultant';
 
   const payload = {
-    legalEntityId: companySettings.peppol_legal_entity_id || null,
+    legalEntityId: companySettings.peppol_legal_entity_id ? parseInt(companySettings.peppol_legal_entity_id) : null,
     routing: {
       eidentifiers: [{ scheme: clientScheme || '0208', id: clientPeppolId || invoice.client_peppol_id }]
     },
     document: {
+      document_type: 'invoice',
       invoice: {
         invoice_number:  invoice.invoice_number,
         invoice_date:    invoiceDate,
