@@ -4308,7 +4308,7 @@ function buildStorecovePayload(invoice, companySettings) {
   const payload = {
     legalEntityId: companySettings.peppol_legal_entity_id ? parseInt(companySettings.peppol_legal_entity_id) : null,
     routing: {
-      eidentifiers: [{ scheme: routingScheme, id: clientPeppolId || invoice.client_peppol_id }]
+      eIdentifiers: [{ scheme: routingScheme, id: clientPeppolId || invoice.client_peppol_id }]
     },
     document: {
       document_type: 'invoice',
