@@ -4294,10 +4294,21 @@ function buildStorecovePayload(invoice, companySettings) {
   const consultantName = [invoice.consultant_first_name, invoice.consultant_last_name]
     .filter(Boolean).join(' ') || 'Consultant';
 
+  // Map numeric PEPPOL schemes to Storecove alpha schemes
+  const schemeMap = {
+    '0208': 'BE:EN', '0106': 'NL:KVK', '0190': 'NL:OINO',
+    '0088': 'GLN',   '0007': 'SE:ORGNR', '0037': 'DE:LWID',
+    '9921': 'DE:VAT', '0184': 'DK:DIGST', '0009': 'FR:SIRET',
+    '0097': 'IT:CUUO', '0210': 'IT:IVA',  '0147': 'ES:VAT',
+    '0192': 'NO:ORG', '0195': 'SG:UEN',   '0151': 'AU:ABN',
+    '0060': 'DUNS',   '0130': 'GLN'
+  };
+  const routingScheme = schemeMap[clientScheme] || clientScheme;
+
   const payload = {
     legalEntityId: companySettings.peppol_legal_entity_id ? parseInt(companySettings.peppol_legal_entity_id) : null,
     routing: {
-      eidentifiers: [{ scheme: clientScheme || '0208', id: clientPeppolId || invoice.client_peppol_id }]
+      eidentifiers: [{ scheme: routingScheme, id: clientPeppolId || invoice.client_peppol_id }]
     },
     document: {
       document_type: 'invoice',
