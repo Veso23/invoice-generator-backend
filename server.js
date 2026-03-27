@@ -4346,11 +4346,11 @@ function buildStorecovePayload(invoice, companySettings) {
         invoice_lines: [
           {
             line_id:     '1',
-            description: `Consulting services — ${consultantName} (${periodFrom} – ${periodTo})`,
-            quantity:     daysWorked,
-            unit_code:   'DAY',
-            unit_price:   dailyRate,
-            amount_excluding_vat: Math.round(dailyRate * daysWorked * 100) / 100,
+            description: `Consulting services — ${consultantName} (${periodFrom} – ${periodTo}) — ${daysWorked} days × €${dailyRate}/day`,
+            quantity:     1,
+            unit_code:   'C62',
+            unit_price:   subtotal,
+            amount_excluding_vat: subtotal,
             tax: {
               percentage: vatRate,
               country:    companySettings.country_code || 'BE',
