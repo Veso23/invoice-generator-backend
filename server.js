@@ -2697,7 +2697,7 @@ app.get('/api/company/settings', authenticateToken, checkCompanyAccess, async (r
               smtp_host, smtp_port, smtp_username, smtp_password,
               smtp_from_email, smtp_from_name, smtp_secure,
               COALESCE(invoice_template, 'classic') as invoice_template,
-              peppol_enabled, peppol_provider, peppol_sender_id, peppol_environment, country_code
+              peppol_enabled, peppol_provider, peppol_sender_id, peppol_environment, country_code, peppol_legal_entity_id
        FROM companies WHERE id = $1`,
       [req.companyId]
     );
@@ -2723,7 +2723,7 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
       smtp_host, smtp_port, smtp_username, smtp_password,
       smtp_from_email, smtp_from_name, smtp_secure,
       invoice_template, contract_renewal_alert_days, payment_terms_days,
-      peppol_enabled, peppol_provider, peppol_api_key, peppol_sender_id, peppol_environment, country_code
+      peppol_enabled, peppol_provider, peppol_api_key, peppol_sender_id, peppol_environment, country_code, peppol_legal_entity_id
     } = req.body;
     
     const result = await pool.query(
@@ -2735,8 +2735,9 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
            smtp_from_email = $17, smtp_from_name = $18, smtp_secure = $19, 
            invoice_template = $20, contract_renewal_alert_days = $21, payment_terms_days = $22,
            peppol_enabled = $23, peppol_provider = $24, peppol_api_key = $25,
-           peppol_sender_id = $26, peppol_environment = $27, country_code = $28, updated_at = NOW()
-       WHERE id = $29
+           peppol_sender_id = $26, peppol_environment = $27, country_code = $28,
+           peppol_legal_entity_id = $29, updated_at = NOW()
+       WHERE id = $30
        RETURNING *`,
       [name, address, representative_name, timesheet_deadline_day, 
        company_vat, company_email, timesheet_email, default_vat_rate,
@@ -2752,6 +2753,7 @@ app.put('/api/company/settings', authenticateToken, requireAdmin, checkCompanyAc
        peppol_sender_id || null,
        peppol_environment || 'mock',
        country_code || 'BE',
+       peppol_legal_entity_id || null,
        req.companyId]
     );
     
@@ -4052,6 +4054,19 @@ app.patch('/api/consultants/:id/reminder-toggle', authenticateToken, requireAdmi
   }
 })();
 
+// Auto-migrate: peppol_legal_entity_id column
+(async () => {
+  try {
+    await pool.query(`
+      ALTER TABLE companies
+        ADD COLUMN IF NOT EXISTS peppol_legal_entity_id VARCHAR(50) DEFAULT NULL
+    `);
+    console.log('✅ peppol_legal_entity_id column ready');
+  } catch (err) {
+    console.error('Migration warning (peppol_legal_entity_id):', err.message);
+  }
+})();
+
 // Auto-migrate: additional_files column for multiple attachments
 (async () => {
   try {
@@ -4278,6 +4293,7 @@ function buildStorecovePayload(invoice, companySettings) {
     .filter(Boolean).join(' ') || 'Consultant';
 
   const payload = {
+    legalEntityId: companySettings.peppol_legal_entity_id || null,
     routing: {
       eidentifiers: [{ scheme: clientScheme || '0208', id: clientPeppolId || invoice.client_peppol_id }]
     },
