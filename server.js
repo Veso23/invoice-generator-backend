@@ -4430,7 +4430,8 @@ app.post('/api/invoices/:id/send-peppol', authenticateToken, checkCompanyAccess,
               co.peppol_provider,
               co.peppol_api_key,
               co.peppol_sender_id,
-              co.peppol_environment
+              co.peppol_environment,
+              co.peppol_legal_entity_id
        FROM invoices i
        LEFT JOIN contracts c   ON i.contract_id = c.id
        LEFT JOIN consultants con ON c.consultant_id = con.id
@@ -4504,7 +4505,8 @@ app.post('/api/invoices/:id/send-peppol', authenticateToken, checkCompanyAccess,
           bank_iban:     invoice.bank_iban,
           bank_name:     invoice.bank_name,
           bank_swift:    invoice.bank_swift,
-          peppol_sender_id: invoice.peppol_sender_id
+          peppol_sender_id: invoice.peppol_sender_id,
+          peppol_legal_entity_id: invoice.peppol_legal_entity_id
         };
         const payload = buildStorecovePayload(invoice, companySettings);
 
