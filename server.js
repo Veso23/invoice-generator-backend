@@ -4303,7 +4303,7 @@ function buildStorecovePayload(invoice, companySettings) {
       document_type: 'invoice',
       invoice: {
         invoice_number:  invoice.invoice_number,
-        invoice_date:    invoiceDate,
+        issue_date:      invoiceDate,
         currency:        'EUR',
         tax_system:      'tax_line_percentages',
 
@@ -4312,9 +4312,9 @@ function buildStorecovePayload(invoice, companySettings) {
           party: {
             company_name: companySettings.name || '',
             address: {
-              street1:  (companySettings.address || '').split('\n')[0] || '',
-              city:     (companySettings.address || '').split('\n')[1] || '',
-              country:  'BE'
+              street1:  (companySettings.address || '').split(',')[0].trim() || 'N/A',
+              city:     (companySettings.address || '').split(',')[1]?.trim() || 'Sofia',
+              country:  companySettings.country_code || 'BE'
             },
             contact: { email: companySettings.company_email || '' }
           },
@@ -4331,8 +4331,8 @@ function buildStorecovePayload(invoice, companySettings) {
           party: {
             company_name: invoice.client_company_name || '',
             address: {
-              street1:  (invoice.client_address || '').split('\n')[0] || '',
-              city:     (invoice.client_address || '').split('\n')[1] || '',
+              street1:  (invoice.client_address || '').split(',')[0].trim() || 'N/A',
+              city:     (invoice.client_address || '').split(',')[1]?.trim() || 'N/A',
               country:  'BE'
             }
           },
@@ -4372,7 +4372,7 @@ function buildStorecovePayload(invoice, companySettings) {
         // ── Payment ───────────────────────────────────────────────
         ...(companySettings.bank_iban ? {
           payment_means_array: [{
-            payment_means_code: '30',  // 30 = credit transfer
+            code: '30',
             financial_account: {
               id: companySettings.bank_iban.replace(/\s/g,''),
               name: companySettings.bank_name || '',
