@@ -4361,7 +4361,8 @@ function buildStorecovePayload(invoice, companySettings) {
             taxable_amount: subtotal,
             tax_amount:     vatAmount,
             tax_percentage: vatRate,
-            tax_category:   invoice.vat_enabled ? 'S' : 'Z'  // S=standard, Z=zero-rated
+            tax_category:   invoice.vat_enabled ? 'S' : 'Z',
+            country:        companySettings.country_code || 'BE'
           }
         ],
 
@@ -4431,7 +4432,8 @@ app.post('/api/invoices/:id/send-peppol', authenticateToken, checkCompanyAccess,
               co.peppol_api_key,
               co.peppol_sender_id,
               co.peppol_environment,
-              co.peppol_legal_entity_id
+              co.peppol_legal_entity_id,
+              co.country_code
        FROM invoices i
        LEFT JOIN contracts c   ON i.contract_id = c.id
        LEFT JOIN consultants con ON c.consultant_id = con.id
@@ -4506,7 +4508,8 @@ app.post('/api/invoices/:id/send-peppol', authenticateToken, checkCompanyAccess,
           bank_name:     invoice.bank_name,
           bank_swift:    invoice.bank_swift,
           peppol_sender_id: invoice.peppol_sender_id,
-          peppol_legal_entity_id: invoice.peppol_legal_entity_id
+          peppol_legal_entity_id: invoice.peppol_legal_entity_id,
+          country_code:  invoice.country_code || 'BE'
         };
         const payload = buildStorecovePayload(invoice, companySettings);
 
