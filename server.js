@@ -4313,6 +4313,7 @@ function buildStorecovePayload(invoice, companySettings) {
             company_name: companySettings.name || '',
             address: {
               street1:  (companySettings.address || '').split(',')[0].trim() || 'N/A',
+              zip:      '1000',
               city:     (companySettings.address || '').split(',')[1]?.trim() || 'Sofia',
               country:  companySettings.country_code || 'BE'
             },
@@ -4321,9 +4322,9 @@ function buildStorecovePayload(invoice, companySettings) {
           public_identifiers: senderPeppolId
             ? [{ scheme: senderScheme || '0208', id: senderPeppolId }]
             : [],
-          tax_registration: companySettings.company_vat
-            ? [{ tax_id: companySettings.company_vat.replace(/\s/g,''), id_type: 'VAT' }]
-            : []
+          tax_registration: senderPeppolId
+            ? [{ tax_id: `BE${senderPeppolId}`, id_type: 'VAT' }]
+            : (companySettings.company_vat ? [{ tax_id: companySettings.company_vat.replace(/\s/g,''), id_type: 'VAT' }] : [])
         },
 
         // ── Customer (the client) ─────────────────────────────────
@@ -4332,6 +4333,7 @@ function buildStorecovePayload(invoice, companySettings) {
             company_name: invoice.client_company_name || '',
             address: {
               street1:  (invoice.client_address || '').split(',')[0].trim() || 'N/A',
+              zip:      '1000',
               city:     (invoice.client_address || '').split(',')[1]?.trim() || 'N/A',
               country:  'BE'
             }
