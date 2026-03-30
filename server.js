@@ -60,11 +60,16 @@ app.use(compression());
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'tiny' : 'combined'));
 
 // CORS configuration - MUST BE BEFORE OTHER MIDDLEWARE
+const allowedOrigins = [
+  'https://invoice-generator-frontend-inky.vercel.app',
+  'http://localhost:3000'
+];
+if (process.env.FRONTEND_URL && !allowedOrigins.includes(process.env.FRONTEND_URL)) {
+  allowedOrigins.push(process.env.FRONTEND_URL);
+}
+
 app.use(cors({
-  origin: [
-    'https://invoice-generator-frontend-inky.vercel.app',
-    'http://localhost:3000'
-  ],
+  origin: allowedOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Impersonate-Company']
@@ -72,10 +77,7 @@ app.use(cors({
 
 // Handle preflight requests with same origin whitelist (not wildcard)
 app.options('*', cors({
-  origin: [
-    'https://invoice-generator-frontend-inky.vercel.app',
-    'http://localhost:3000'
-  ],
+  origin: allowedOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Impersonate-Company']
