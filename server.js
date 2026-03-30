@@ -2588,6 +2588,201 @@ app.post('/api/n8n/automation-data', async (req, res) => {
     res.status(500).json({ error: 'Internal server error', detail: error.message });
   }
 });
+// POST /api/timesheets/analyze — AI analysis of timesheet + invoice PDFs
+app.post('/api/timesheets/analyze', async (req, res) => {
+  try {
+    const {
+      companyId, senderEmail, recipientEmail, timestamp,
+      allFileUrls,   // array of {url, fileName} for all uploaded PDFs
+      extractedTexts // array of {text, url, fileName} - text extracted from each PDF
+    } = req.body;
+
+    if (!companyId) return res.status(400).json({ error: 'companyId required' });
+    if (!extractedTexts || extractedTexts.length === 0) {
+      return res.status(400).json({ error: 'No extracted texts provided' });
+    }
+
+    // Get contract rate for this consultant
+    let contractRate = null;
+    if (senderEmail) {
+      const contractResult = await pool.query(`
+        SELECT c.purchase_price, c.sell_price
+        FROM contracts c
+        JOIN consultants con ON c.consultant_id = con.id
+        WHERE c.company_id = $1
+          AND LOWER(con.email) = LOWER($2)
+          AND c.status = 'active'
+          AND c.deleted_at IS NULL
+        LIMIT 1
+      `, [companyId, senderEmail]);
+      if (contractResult.rows.length > 0) {
+        contractRate = parseFloat(contractResult.rows[0].purchase_price);
+      }
+    }
+
+    // Build prompt for OpenAI
+    const filesText = extractedTexts.map((f, i) =>
+      `--- FILE ${i + 1} (${f.fileName}) ---\n${f.text}`
+    ).join('\n\n');
+
+    const prompt = `Analyze these ${extractedTexts.length} document(s) from a consultant. For each file determine:
+1. Document type: "timesheet", "invoice", or "other"
+2. If timesheet: extract days_worked, month, person_name
+3. If invoice: extract days_billed, daily_rate, total_amount, currency
+
+${filesText}
+
+Return ONLY valid JSON:
+{
+  "files": [
+    {
+      "file_index": 0,
+      "type": "timesheet",
+      "days_worked": 22,
+      "month": "January",
+      "person_name": "John Doe",
+      "days_billed": null,
+      "daily_rate": null,
+      "total_amount": null
+    }
+  ]
+}
+
+Rules:
+- type must be exactly "timesheet", "invoice", or "other"
+- days_worked: actual days worked from timesheet (decimal ok)
+- days_billed: days from invoice
+- daily_rate: rate per day from invoice
+- total_amount: total invoice amount (excluding VAT if possible)
+- month: in English, capitalized
+- Use null for fields not applicable to the document type`;
+
+    // Call OpenAI
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (!openaiKey) return res.status(500).json({ error: 'OpenAI API key not configured' });
+
+    const openaiResp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${openaiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 1000,
+        temperature: 0
+      })
+    });
+
+    const openaiData = await openaiResp.json();
+    let aiResult = { files: [] };
+    try {
+      const rawText = openaiData.choices?.[0]?.message?.content || '{}';
+      const cleaned = rawText.replace(/```json|```/g, '').trim();
+      aiResult = JSON.parse(cleaned);
+    } catch(e) {
+      console.error('AI parse error:', e.message);
+    }
+
+    const files = aiResult.files || [];
+    const timesheet = files.find(f => f.type === 'timesheet');
+    const invoice = files.find(f => f.type === 'invoice');
+
+    // Build result
+    const timesheetFileUrl = timesheet ? (extractedTexts[timesheet.file_index]?.url || null) : null;
+    const invoiceFileUrl = invoice ? (extractedTexts[invoice.file_index]?.url || null) : null;
+    const additionalFiles = extractedTexts
+      .filter((_, i) => {
+        const f = files[i];
+        return f?.type === 'other' || (!timesheet && !invoice);
+      })
+      .map(f => f.url)
+      .filter(Boolean);
+
+    // Comparison logic
+    let daysMatch = null;
+    let amountMatch = null;
+    let comparisonNotes = [];
+    let flaggedForReview = false;
+
+    if (timesheet && invoice) {
+      const tsDays = parseFloat(timesheet.days_worked);
+      const invDays = parseFloat(invoice.days_billed);
+      const invRate = parseFloat(invoice.daily_rate);
+      const invTotal = parseFloat(invoice.total_amount);
+
+      if (!isNaN(tsDays) && !isNaN(invDays)) {
+        daysMatch = Math.abs(tsDays - invDays) < 0.5;
+        if (!daysMatch) {
+          comparisonNotes.push(`Days mismatch: timesheet=${tsDays}, invoice=${invDays}`);
+          flaggedForReview = true;
+        }
+      }
+
+      if (contractRate && !isNaN(invRate)) {
+        const rateDiff = Math.abs(contractRate - invRate);
+        if (rateDiff > 1) {
+          comparisonNotes.push(`Rate mismatch: contract=${contractRate}, invoice=${invRate}`);
+          flaggedForReview = true;
+        }
+      }
+
+      if (!isNaN(tsDays) && contractRate && !isNaN(invTotal)) {
+        const expectedAmount = tsDays * contractRate;
+        amountMatch = Math.abs(expectedAmount - invTotal) < 1;
+        if (!amountMatch) {
+          comparisonNotes.push(`Amount mismatch: expected=${expectedAmount.toFixed(2)}, invoice=${invTotal}`);
+          flaggedForReview = true;
+        }
+      }
+    } else if (!invoice && timesheet) {
+      comparisonNotes.push('No invoice found in email — timesheet only');
+    } else if (!timesheet) {
+      comparisonNotes.push('No timesheet found');
+      flaggedForReview = true;
+    }
+
+    // Save to automation_logs
+    const insertResult = await pool.query(`
+      INSERT INTO automation_logs (
+        company_id, sender_email, recipient_email,
+        person_name, month, pdf_days,
+        timesheet_file_url, invoice_file_url,
+        invoice_days, invoice_daily_rate, invoice_total,
+        contract_rate, days_match, amount_match,
+        comparison_notes, has_invoice,
+        flagged_for_review, additional_files,
+        status, created_at
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+        $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW()
+      ) RETURNING *
+    `, [
+      companyId, senderEmail, recipientEmail,
+      timesheet?.person_name || null,
+      timesheet?.month || null,
+      timesheet?.days_worked?.toString() || null,
+      timesheetFileUrl, invoiceFileUrl,
+      invoice?.days_billed || null,
+      invoice?.daily_rate || null,
+      invoice?.total_amount || null,
+      contractRate,
+      daysMatch, amountMatch,
+      comparisonNotes.join('; ') || null,
+      !!invoice,
+      flaggedForReview,
+      JSON.stringify(additionalFiles),
+      flaggedForReview ? 'review' : null
+    ]);
+
+    res.status(201).json(insertResult.rows[0]);
+  } catch (error) {
+    console.error('Analyze endpoint error:', error.message);
+    res.status(500).json({ error: 'Internal server error', detail: error.message });
+  }
+});
+
 // Get automation logs
 app.get('/api/automation-logs', authenticateToken, async (req, res) => {
   try {
@@ -4068,6 +4263,27 @@ app.patch('/api/consultants/:id/reminder-toggle', authenticateToken, requireAdmi
     console.log('✅ peppol_legal_entity_id column ready');
   } catch (err) {
     console.error('Migration warning (peppol_legal_entity_id):', err.message);
+  }
+})();
+
+// Auto-migrate: invoice comparison columns
+(async () => {
+  try {
+    await pool.query(`
+      ALTER TABLE automation_logs
+        ADD COLUMN IF NOT EXISTS invoice_file_url VARCHAR(500),
+        ADD COLUMN IF NOT EXISTS invoice_days NUMERIC,
+        ADD COLUMN IF NOT EXISTS invoice_daily_rate NUMERIC,
+        ADD COLUMN IF NOT EXISTS invoice_total NUMERIC,
+        ADD COLUMN IF NOT EXISTS contract_rate NUMERIC,
+        ADD COLUMN IF NOT EXISTS days_match BOOLEAN,
+        ADD COLUMN IF NOT EXISTS amount_match BOOLEAN,
+        ADD COLUMN IF NOT EXISTS comparison_notes TEXT,
+        ADD COLUMN IF NOT EXISTS has_invoice BOOLEAN DEFAULT false
+    `);
+    console.log('✅ Invoice comparison columns ready');
+  } catch (err) {
+    console.error('Migration warning (invoice comparison):', err.message);
   }
 })();
 
