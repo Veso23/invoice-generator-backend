@@ -2592,12 +2592,98 @@ app.post('/api/n8n/automation-data', async (req, res) => {
 app.post('/api/timesheets/analyze', async (req, res) => {
   try {
     const {
-      companyId, senderEmail, recipientEmail, timestamp,
-      allFileUrls,   // array of {url, fileName} for all uploaded PDFs
-      extractedTexts // array of {text, url, fileName} - text extracted from each PDF
+      companyId, senderEmail, recipientEmail,
+      // Simple mode (from N8N with pre-extracted data)
+      pdfDays, pdfHours, personName, month,
+      timesheetFileUrl: tsFileUrl,
+      extraFileUrl1, extraFileUrl2,
+      additionalFiles: additionalFilesRaw,
+      // Full mode (with raw extracted texts)
+      extractedTexts
     } = req.body;
 
     if (!companyId) return res.status(400).json({ error: 'companyId required' });
+
+    // Simple mode: N8N already extracted timesheet data via AI
+    const isSimpleMode = !extractedTexts && (pdfDays !== undefined || tsFileUrl);
+
+    if (isSimpleMode) {
+      // Get contract rate
+      let contractRate = null;
+      if (senderEmail) {
+        const contractResult = await pool.query(`
+          SELECT c.purchase_price FROM contracts c
+          JOIN consultants con ON c.consultant_id = con.id
+          WHERE c.company_id = $1 AND LOWER(con.email) = LOWER($2)
+            AND c.status = 'active' AND c.deleted_at IS NULL
+          LIMIT 1
+        `, [companyId, senderEmail]);
+        if (contractResult.rows.length > 0) {
+          contractRate = parseFloat(contractResult.rows[0].purchase_price);
+        }
+      }
+
+      const days = parseFloat(pdfDays) || null;
+      let comparisonNotes = [];
+      let flaggedForReview = false;
+      let amountMatch = null;
+
+      // Parse additional files
+      let addFiles = [];
+      try {
+        addFiles = typeof additionalFilesRaw === 'string'
+          ? JSON.parse(additionalFilesRaw)
+          : (Array.isArray(additionalFilesRaw) ? additionalFilesRaw : []);
+      } catch(e) { addFiles = []; }
+      if (extraFileUrl1) addFiles.push(extraFileUrl1);
+      if (extraFileUrl2) addFiles.push(extraFileUrl2);
+      addFiles = [...new Set(addFiles.filter(Boolean))];
+
+      // Check amount vs contract rate
+      if (days && contractRate) {
+        const expectedAmount = days * contractRate;
+        amountMatch = true; // We don't have invoice amount in simple mode
+        comparisonNotes.push(`Expected: ${days} days × €${contractRate} = €${expectedAmount.toFixed(2)}`);
+      }
+
+      // Flag if extra files exist (potential invoice)
+      const hasInvoice = addFiles.length > 0;
+      if (hasInvoice) {
+        comparisonNotes.push(`${addFiles.length} additional file(s) — manual invoice check required`);
+        flaggedForReview = true;
+      }
+
+      if (!days) {
+        comparisonNotes.push('Could not extract days from timesheet');
+        flaggedForReview = true;
+      }
+
+      const insertResult = await pool.query(`
+        INSERT INTO automation_logs (
+          company_id, sender_email, recipient_email,
+          person_name, month, pdf_days,
+          timesheet_file_url, contract_rate,
+          amount_match, comparison_notes,
+          has_invoice, flagged_for_review,
+          additional_files, status, created_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
+        RETURNING *
+      `, [
+        companyId, senderEmail, recipientEmail,
+        personName || null, month || null,
+        pdfDays?.toString() || null,
+        tsFileUrl || null, contractRate,
+        amountMatch,
+        comparisonNotes.join('; ') || null,
+        hasInvoice, flaggedForReview,
+        JSON.stringify(addFiles),
+        flaggedForReview ? 'review' : null
+      ]);
+
+      return res.status(201).json(insertResult.rows[0]);
+    }
+
+    // Full mode: extractedTexts provided
     if (!extractedTexts || extractedTexts.length === 0) {
       return res.status(400).json({ error: 'No extracted texts provided' });
     }
