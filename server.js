@@ -2588,160 +2588,50 @@ app.post('/api/n8n/automation-data', async (req, res) => {
     res.status(500).json({ error: 'Internal server error', detail: error.message });
   }
 });
-// POST /api/timesheets/analyze — AI analysis of timesheet + invoice PDFs
+// POST /api/timesheets/analyze — SLIM MODE: AI identifies timesheet, extracts days/month/person
 app.post('/api/timesheets/analyze', async (req, res) => {
   try {
     const {
       companyId, senderEmail, recipientEmail,
-      // Simple mode (from N8N with pre-extracted data)
-      pdfDays, pdfHours, personName, month,
-      timesheetFileUrl: tsFileUrl,
-      extraFileUrl1, extraFileUrl2,
-      additionalFiles: additionalFilesRaw,
-      // Full mode (with raw extracted texts)
       extractedTexts
     } = req.body;
 
     if (!companyId) return res.status(400).json({ error: 'companyId required' });
-
-    // Simple mode: N8N already extracted timesheet data via AI
-    const isSimpleMode = !extractedTexts && (pdfDays !== undefined || tsFileUrl);
-
-    if (isSimpleMode) {
-      // Get contract rate
-      let contractRate = null;
-      if (senderEmail) {
-        const contractResult = await pool.query(`
-          SELECT c.purchase_price FROM contracts c
-          JOIN consultants con ON c.consultant_id = con.id
-          WHERE c.company_id = $1 AND LOWER(con.email) = LOWER($2)
-            AND c.status = 'active' AND c.deleted_at IS NULL
-          LIMIT 1
-        `, [companyId, senderEmail]);
-        if (contractResult.rows.length > 0) {
-          contractRate = parseFloat(contractResult.rows[0].purchase_price);
-        }
-      }
-
-      const days = parseFloat(pdfDays) || null;
-      let comparisonNotes = [];
-      let flaggedForReview = false;
-      let amountMatch = null;
-
-      // Parse additional files
-      let addFiles = [];
-      try {
-        addFiles = typeof additionalFilesRaw === 'string'
-          ? JSON.parse(additionalFilesRaw)
-          : (Array.isArray(additionalFilesRaw) ? additionalFilesRaw : []);
-      } catch(e) { addFiles = []; }
-      if (extraFileUrl1) addFiles.push(extraFileUrl1);
-      if (extraFileUrl2) addFiles.push(extraFileUrl2);
-      addFiles = [...new Set(addFiles.filter(Boolean))];
-
-      // Check amount vs contract rate
-      if (days && contractRate) {
-        const expectedAmount = days * contractRate;
-        amountMatch = true; // We don't have invoice amount in simple mode
-        comparisonNotes.push(`Expected: ${days} days × €${contractRate} = €${expectedAmount.toFixed(2)}`);
-      }
-
-      // Flag if extra files exist (potential invoice)
-      const hasInvoice = addFiles.length > 0;
-      if (hasInvoice) {
-        comparisonNotes.push(`${addFiles.length} additional file(s) — manual invoice check required`);
-        flaggedForReview = true;
-      }
-
-      if (!days) {
-        comparisonNotes.push('Could not extract days from timesheet');
-        flaggedForReview = true;
-      }
-
-      const insertResult = await pool.query(`
-        INSERT INTO automation_logs (
-          company_id, sender_email, recipient_email,
-          person_name, month, pdf_days,
-          timesheet_file_url, contract_rate,
-          amount_match, comparison_notes,
-          has_invoice, flagged_for_review,
-          additional_files, status, created_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
-        RETURNING *
-      `, [
-        companyId, senderEmail, recipientEmail,
-        personName || null, month || null,
-        pdfDays?.toString() || null,
-        tsFileUrl || null, contractRate,
-        amountMatch,
-        comparisonNotes.join('; ') || null,
-        hasInvoice, flaggedForReview,
-        JSON.stringify(addFiles),
-        flaggedForReview ? 'review' : null
-      ]);
-
-      return res.status(201).json(insertResult.rows[0]);
-    }
-
-    // Full mode: extractedTexts provided
     if (!extractedTexts || extractedTexts.length === 0) {
       return res.status(400).json({ error: 'No extracted texts provided' });
     }
 
-    // Get contract rate for this consultant
-    let contractRate = null;
-    if (senderEmail) {
-      const contractResult = await pool.query(`
-        SELECT c.purchase_price, c.sell_price
-        FROM contracts c
-        JOIN consultants con ON c.consultant_id = con.id
-        WHERE c.company_id = $1
-          AND LOWER(con.email) = LOWER($2)
-          AND c.status = 'active'
-          AND c.deleted_at IS NULL
-        LIMIT 1
-      `, [companyId, senderEmail]);
-      if (contractResult.rows.length > 0) {
-        contractRate = parseFloat(contractResult.rows[0].purchase_price);
-      }
-    }
-
-    // Build prompt for OpenAI
+    // Build prompt for OpenAI — only classify + extract timesheet data
     const filesText = extractedTexts.map((f, i) =>
       `--- FILE ${i + 1} (${f.fileName}) ---\n${f.text}`
     ).join('\n\n');
 
-    const prompt = `Analyze these ${extractedTexts.length} document(s) from a consultant. For each file determine:
-1. Document type: "timesheet", "invoice", or "other"
-2. If timesheet: extract days_worked, month, person_name
-3. If invoice: extract days_billed, daily_rate, total_amount, currency
+    const prompt = `Analyze these ${extractedTexts.length} document(s) from a consultant.
+
+For EACH file determine:
+1. Is this file a TIMESHEET? (yes/no) — a timesheet is a document tracking days/hours worked on specific dates
+2. If it IS a timesheet, extract:
+   - days_worked (total days, decimal allowed like 21.5)
+   - month (in English, capitalized, e.g. "January")
+   - person_name (consultant's full name)
 
 ${filesText}
 
-Return ONLY valid JSON:
+Return ONLY valid JSON with this exact structure:
 {
-  "files": [
-    {
-      "file_index": 0,
-      "type": "timesheet",
-      "days_worked": 22,
-      "month": "January",
-      "person_name": "John Doe",
-      "days_billed": null,
-      "daily_rate": null,
-      "total_amount": null
-    }
-  ]
+  "timesheet_file_index": 0,
+  "days_worked": 22,
+  "month": "January",
+  "person_name": "John Doe"
 }
 
 Rules:
-- type must be exactly "timesheet", "invoice", or "other"
-- days_worked: actual days worked from timesheet (decimal ok)
-- days_billed: days from invoice
-- daily_rate: rate per day from invoice
-- total_amount: total invoice amount (excluding VAT if possible)
-- month: in English, capitalized
-- Use null for fields not applicable to the document type`;
+- timesheet_file_index: the 0-based index of the file that IS a timesheet. Use null if NO file is a timesheet.
+- If multiple files look like timesheets, pick the one with clearest day-by-day breakdown.
+- days_worked: null if not a timesheet or cannot be determined.
+- month: null if cannot be determined. Must be English month name.
+- person_name: null if cannot be determined.
+- Do NOT extract invoice data, rates, totals, or any financial info — we don't care about that.`;
 
     // Call OpenAI
     const openaiKey = process.env.OPENAI_API_KEY;
@@ -2756,110 +2646,63 @@ Rules:
       body: JSON.stringify({
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 1000,
+        max_tokens: 300,
         temperature: 0
       })
     });
 
     const openaiData = await openaiResp.json();
-    let aiResult = { files: [] };
+    let aiResult = {};
     try {
       const rawText = openaiData.choices?.[0]?.message?.content || '{}';
       const cleaned = rawText.replace(/```json|```/g, '').trim();
       aiResult = JSON.parse(cleaned);
-    } catch(e) {
+    } catch (e) {
       console.error('AI parse error:', e.message);
+      aiResult = {};
     }
 
-    const files = aiResult.files || [];
-    const timesheet = files.find(f => f.type === 'timesheet');
-    const invoice = files.find(f => f.type === 'invoice');
+    const tsIndex = aiResult.timesheet_file_index;
+    const hasTimesheet = tsIndex !== null && tsIndex !== undefined && extractedTexts[tsIndex];
 
-    // Build result
-    const timesheetFileUrl = timesheet ? (extractedTexts[timesheet.file_index]?.url || null) : null;
-    const invoiceFileUrl = invoice ? (extractedTexts[invoice.file_index]?.url || null) : null;
+    // Build file URLs
+    const timesheetFileUrl = hasTimesheet ? (extractedTexts[tsIndex]?.url || null) : null;
+
+    // All NON-timesheet files go to additional_files (invoice, other, anything)
     const additionalFiles = extractedTexts
-      .filter((_, i) => {
-        const f = files[i];
-        return f?.type === 'other' || (!timesheet && !invoice);
-      })
+      .filter((_, i) => i !== tsIndex)
       .map(f => f.url)
       .filter(Boolean);
 
-    // Comparison logic
-    let daysMatch = null;
-    let amountMatch = null;
-    let comparisonNotes = [];
-    let flaggedForReview = false;
-
-    if (timesheet && invoice) {
-      const tsDays = parseFloat(timesheet.days_worked);
-      const invDays = parseFloat(invoice.days_billed);
-      const invRate = parseFloat(invoice.daily_rate);
-      const invTotal = parseFloat(invoice.total_amount);
-
-      if (!isNaN(tsDays) && !isNaN(invDays)) {
-        daysMatch = Math.abs(tsDays - invDays) < 0.5;
-        if (!daysMatch) {
-          comparisonNotes.push(`Days mismatch: timesheet=${tsDays}, invoice=${invDays}`);
-          flaggedForReview = true;
-        }
-      }
-
-      if (contractRate && !isNaN(invRate)) {
-        const rateDiff = Math.abs(contractRate - invRate);
-        if (rateDiff > 1) {
-          comparisonNotes.push(`Rate mismatch: contract=${contractRate}, invoice=${invRate}`);
-          flaggedForReview = true;
-        }
-      }
-
-      if (!isNaN(tsDays) && contractRate && !isNaN(invTotal)) {
-        const expectedAmount = tsDays * contractRate;
-        amountMatch = Math.abs(expectedAmount - invTotal) < 1;
-        if (!amountMatch) {
-          comparisonNotes.push(`Amount mismatch: expected=${expectedAmount.toFixed(2)}, invoice=${invTotal}`);
-          flaggedForReview = true;
-        }
-      }
-    } else if (!invoice && timesheet) {
-      comparisonNotes.push('No invoice found in email — timesheet only');
-    } else if (!timesheet) {
-      comparisonNotes.push('No timesheet found');
-      flaggedForReview = true;
+    // Status + notes
+    let status = null;
+    let notes = null;
+    if (!hasTimesheet) {
+      status = 'no_timesheet_detected';
+      notes = `No timesheet file detected among ${extractedTexts.length} attachment(s). All files saved for manual review.`;
+    } else if (!aiResult.days_worked) {
+      status = 'review';
+      notes = 'Timesheet detected but days could not be extracted. Please set days manually.';
     }
 
-    // Save to automation_logs
+    // Save to automation_logs — ONLY slim-mode fields
     const insertResult = await pool.query(`
       INSERT INTO automation_logs (
         company_id, sender_email, recipient_email,
         person_name, month, pdf_days,
-        timesheet_file_url, invoice_file_url,
-        invoice_days, invoice_daily_rate, invoice_total,
-        contract_rate, days_match, amount_match,
-        comparison_notes, has_invoice,
-        flagged_for_review, additional_files,
-        status, created_at
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-        $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW()
-      ) RETURNING *
+        timesheet_file_url, additional_files,
+        status, notes, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+      RETURNING *
     `, [
       companyId, senderEmail, recipientEmail,
-      timesheet?.person_name || null,
-      timesheet?.month || null,
-      timesheet?.days_worked?.toString() || null,
-      timesheetFileUrl, invoiceFileUrl,
-      invoice?.days_billed || null,
-      invoice?.daily_rate || null,
-      invoice?.total_amount || null,
-      contractRate,
-      daysMatch, amountMatch,
-      comparisonNotes.join('; ') || null,
-      !!invoice,
-      flaggedForReview,
+      aiResult.person_name || null,
+      aiResult.month || null,
+      aiResult.days_worked != null ? aiResult.days_worked.toString() : null,
+      timesheetFileUrl,
       JSON.stringify(additionalFiles),
-      flaggedForReview ? 'review' : null
+      status,
+      notes
     ]);
 
     res.status(201).json(insertResult.rows[0]);
