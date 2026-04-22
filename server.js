@@ -430,6 +430,28 @@ const requireSuperAdmin = (req, res, next) => {
   next();
 };
 
+// ✅ Plan gate — reject if company plan isn't 'full'
+// Resolves company by either req.companyId (after checkCompanyAccess) or req.user.company_id
+const requireFullPlan = async (req, res, next) => {
+  try {
+    const companyId = req.companyId || req.user?.company_id;
+    if (!companyId) return res.status(400).json({ error: 'Company not identified' });
+    const r = await pool.query('SELECT plan FROM companies WHERE id = $1', [companyId]);
+    const plan = r.rows[0]?.plan || 'slim';
+    if (plan !== 'full') {
+      return res.status(403).json({
+        error: 'Feature not available on your plan',
+        detail: 'Invoice generation requires the Full plan. Contact your administrator.',
+        plan
+      });
+    }
+    next();
+  } catch (err) {
+    console.error('requireFullPlan error:', err.message);
+    return res.status(500).json({ error: 'Plan check failed' });
+  }
+};
+
 // Company middleware
 const checkCompanyAccess = (req, res, next) => {
   // Super admin can override company_id via header OR query param (for file downloads)
@@ -568,6 +590,7 @@ app.post('/api/auth/register', async (req, res) => {
           role: user.role,
           permissions: user.permissions || DEFAULT_PERMISSIONS.admin,
           companyId: user.company_id,
+          plan: 'slim',
           active: user.active
         }
       });
@@ -596,7 +619,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     // Find user with company name (exclude soft-deleted)
     const result = await pool.query(`
-      SELECT u.*, c.name as company_name 
+      SELECT u.*, c.name as company_name, c.plan as company_plan
       FROM users u 
       LEFT JOIN companies c ON u.company_id = c.id 
       WHERE u.email = $1 AND u.deleted_at IS NULL
@@ -633,6 +656,7 @@ app.post('/api/auth/login', async (req, res) => {
         permissions: user.permissions || DEFAULT_PERMISSIONS[user.role] || DEFAULT_PERMISSIONS.operator,
         companyId: user.company_id,
         companyName: user.company_name,
+        plan: user.company_plan || 'slim',
         active: user.active
       }
     });
@@ -1901,7 +1925,7 @@ app.put('/api/timesheets/:id/flag-review', authenticateToken, checkCompanyAccess
 });
 
 // Invoice Generation
-app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAccess, async (req, res) => {
+app.post('/api/invoices/generate/:contractId', authenticateToken, checkCompanyAccess, requireFullPlan, async (req, res) => {
   try {
     const { contractId } = req.params;
 
@@ -3163,7 +3187,7 @@ app.put('/api/invoices/:id/vat-toggle', authenticateToken, checkCompanyAccess, a
 });
 
 // Generate PDF for an invoice
-app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess, async (req, res) => {
+app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess, requireFullPlan, async (req, res) => {
   try {
     const { id } = req.params;
     const PDFDocument = require('pdfkit');
@@ -3717,7 +3741,7 @@ app.post('/api/invoices/:id/generate-pdf', authenticateToken, checkCompanyAccess
 });
 
 // Send invoice email
-app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, async (req, res) => {
+app.post('/api/invoices/:id/send-email', authenticateToken, checkCompanyAccess, requireFullPlan, async (req, res) => {
   try {
     const { id } = req.params;
     
@@ -3969,6 +3993,33 @@ app.get('/api/superadmin/companies/:id', authenticateToken, requireSuperAdmin, a
 });
 
 // Generate impersonation token (super admin only)
+// Update company plan (super admin only)
+app.put('/api/superadmin/companies/:id/plan', authenticateToken, requireSuperAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { plan } = req.body;
+    if (!['slim', 'full'].includes(plan)) {
+      return res.status(400).json({ error: 'Invalid plan. Must be "slim" or "full".' });
+    }
+    const result = await pool.query(
+      'UPDATE companies SET plan = $1 WHERE id = $2 RETURNING id, name, plan',
+      [plan, id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+    await logAudit(
+      req.companyId || req.user.company_id, req.user.id, req.user.email,
+      'UPDATE_COMPANY_PLAN', 'company', parseInt(id),
+      { new_plan: plan }
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Update plan error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 app.post('/api/superadmin/impersonate/:companyId', authenticateToken, requireSuperAdmin, async (req, res) => {
   try {
     const { companyId } = req.params;
@@ -4205,6 +4256,31 @@ app.patch('/api/consultants/:id/reminder-toggle', authenticateToken, requireAdmi
   }
 })();
 
+// Auto-migrate: plan column (slim | full) on companies
+(async () => {
+  try {
+    await pool.query(`
+      ALTER TABLE companies
+        ADD COLUMN IF NOT EXISTS plan VARCHAR(20) DEFAULT 'slim' NOT NULL
+    `);
+    // Add check constraint if not already present
+    await pool.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'companies_plan_check'
+        ) THEN
+          ALTER TABLE companies
+            ADD CONSTRAINT companies_plan_check CHECK (plan IN ('slim', 'full'));
+        END IF;
+      END $$;
+    `);
+    console.log('✅ companies.plan column ready');
+  } catch (err) {
+    console.error('Migration warning (companies.plan):', err.message);
+  }
+})();
+
 // Auto-migrate: invoice comparison columns
 (async () => {
   try {
@@ -4273,7 +4349,7 @@ app.patch('/api/consultants/:id/reminder-toggle', authenticateToken, requireAdmi
 })();
 
 // POST /api/invoices/:id/credit-note — create credit note for an invoice
-app.post('/api/invoices/:id/credit-note', authenticateToken, checkCompanyAccess, async (req, res) => {
+app.post('/api/invoices/:id/credit-note', authenticateToken, checkCompanyAccess, requireFullPlan, async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
@@ -4579,7 +4655,7 @@ app.get('/api/peppol/lookup', authenticateToken, async (req, res) => {
 });
 
 // POST /api/invoices/:id/send-peppol
-app.post('/api/invoices/:id/send-peppol', authenticateToken, checkCompanyAccess, async (req, res) => {
+app.post('/api/invoices/:id/send-peppol', authenticateToken, checkCompanyAccess, requireFullPlan, async (req, res) => {
   try {
     const { id } = req.params;
 
