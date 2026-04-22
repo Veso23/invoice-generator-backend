@@ -2588,7 +2588,7 @@ app.post('/api/n8n/automation-data', async (req, res) => {
     res.status(500).json({ error: 'Internal server error', detail: error.message });
   }
 });
-// POST /api/timesheets/analyze — SLIM MODE: AI identifies timesheet, extracts days/month/person
+// POST /api/timesheets/analyze — SLIM MODE v2: AI classifies every file + extracts timesheet data
 app.post('/api/timesheets/analyze', async (req, res) => {
   try {
     const {
@@ -2601,37 +2601,40 @@ app.post('/api/timesheets/analyze', async (req, res) => {
       return res.status(400).json({ error: 'No extracted texts provided' });
     }
 
-    // Build prompt for OpenAI — only classify + extract timesheet data
+    // Build prompt for OpenAI — classify each file + extract timesheet data only
     const filesText = extractedTexts.map((f, i) =>
       `--- FILE ${i + 1} (${f.fileName}) ---\n${f.text}`
     ).join('\n\n');
 
     const prompt = `Analyze these ${extractedTexts.length} document(s) from a consultant.
 
-For EACH file determine:
-1. Is this file a TIMESHEET? (yes/no) — a timesheet is a document tracking days/hours worked on specific dates
-2. If it IS a timesheet, extract:
-   - days_worked (total days, decimal allowed like 21.5)
-   - month (in English, capitalized, e.g. "January")
-   - person_name (consultant's full name)
+For EACH file (in the SAME order as listed below), classify its type as one of:
+- "timesheet" — document tracking days or hours worked on specific dates
+- "invoice" — billing document with amounts due, line items, or invoice number
+- "other" — anything else (cover letter, receipt, report, etc.)
+
+If a file is a TIMESHEET, also extract:
+- days_worked (total days, decimal allowed like 21.5)
+- month (in English, capitalized, e.g. "January")
+- person_name (consultant's full name)
 
 ${filesText}
 
-Return ONLY valid JSON with this exact structure:
+Return ONLY valid JSON with this exact structure (one entry per file, in order):
 {
-  "timesheet_file_index": 0,
-  "days_worked": 22,
-  "month": "January",
-  "person_name": "John Doe"
+  "files": [
+    { "type": "timesheet", "days_worked": 22, "month": "January", "person_name": "John Doe" },
+    { "type": "invoice" },
+    { "type": "other" }
+  ]
 }
 
 Rules:
-- timesheet_file_index: the 0-based index of the file that IS a timesheet. Use null if NO file is a timesheet.
-- If multiple files look like timesheets, pick the one with clearest day-by-day breakdown.
-- days_worked: null if not a timesheet or cannot be determined.
-- month: null if cannot be determined. Must be English month name.
-- person_name: null if cannot be determined.
-- Do NOT extract invoice data, rates, totals, or any financial info — we don't care about that.`;
+- Return exactly ${extractedTexts.length} entries in "files", one per input file, in the same order.
+- "type" must be exactly "timesheet", "invoice", or "other".
+- If multiple files look like timesheets, only mark the ONE with the clearest day-by-day breakdown as "timesheet"; classify the rest as "other".
+- days_worked / month / person_name: only present on the timesheet entry. Use null if a timesheet is present but days cannot be determined.
+- DO NOT extract invoice amounts, rates, dates, or invoice numbers.`;
 
     // Call OpenAI
     const openaiKey = process.env.OPENAI_API_KEY;
@@ -2646,32 +2649,39 @@ Rules:
       body: JSON.stringify({
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 300,
+        max_tokens: 400,
         temperature: 0
       })
     });
 
     const openaiData = await openaiResp.json();
-    let aiResult = {};
+    let aiResult = { files: [] };
     try {
       const rawText = openaiData.choices?.[0]?.message?.content || '{}';
       const cleaned = rawText.replace(/```json|```/g, '').trim();
       aiResult = JSON.parse(cleaned);
     } catch (e) {
       console.error('AI parse error:', e.message);
-      aiResult = {};
+      aiResult = { files: [] };
     }
 
-    const tsIndex = aiResult.timesheet_file_index;
-    const hasTimesheet = tsIndex !== null && tsIndex !== undefined && extractedTexts[tsIndex];
+    const aiFiles = Array.isArray(aiResult.files) ? aiResult.files : [];
 
-    // Build file URLs
-    const timesheetFileUrl = hasTimesheet ? (extractedTexts[tsIndex]?.url || null) : null;
+    // Find the timesheet entry (if any)
+    const tsIdx = aiFiles.findIndex(f => f && f.type === 'timesheet');
+    const timesheetEntry = tsIdx >= 0 ? aiFiles[tsIdx] : null;
+    const hasTimesheet = timesheetEntry && extractedTexts[tsIdx];
 
-    // All NON-timesheet files go to additional_files (invoice, other, anything)
+    const timesheetFileUrl = hasTimesheet ? (extractedTexts[tsIdx]?.url || null) : null;
+
+    // Build additional_files as array of {url, type} — everything that's NOT the timesheet
     const additionalFiles = extractedTexts
-      .filter((_, i) => i !== tsIndex)
-      .map(f => f.url)
+      .map((ft, i) => {
+        if (i === tsIdx) return null; // skip the timesheet itself
+        const aiEntry = aiFiles[i] || {};
+        const type = (aiEntry.type === 'invoice' || aiEntry.type === 'other') ? aiEntry.type : 'other';
+        return ft.url ? { url: ft.url, type } : null;
+      })
       .filter(Boolean);
 
     // Status + notes
@@ -2680,12 +2690,12 @@ Rules:
     if (!hasTimesheet) {
       status = 'no_timesheet_detected';
       notes = `No timesheet file detected among ${extractedTexts.length} attachment(s). All files saved for manual review.`;
-    } else if (!aiResult.days_worked) {
+    } else if (!timesheetEntry.days_worked) {
       status = 'review';
       notes = 'Timesheet detected but days could not be extracted. Please set days manually.';
     }
 
-    // Save to automation_logs — ONLY slim-mode fields
+    // Save to automation_logs — slim-mode fields only
     const insertResult = await pool.query(`
       INSERT INTO automation_logs (
         company_id, sender_email, recipient_email,
@@ -2696,9 +2706,9 @@ Rules:
       RETURNING *
     `, [
       companyId, senderEmail, recipientEmail,
-      aiResult.person_name || null,
-      aiResult.month || null,
-      aiResult.days_worked != null ? aiResult.days_worked.toString() : null,
+      timesheetEntry?.person_name || null,
+      timesheetEntry?.month || null,
+      timesheetEntry?.days_worked != null ? timesheetEntry.days_worked.toString() : null,
       timesheetFileUrl,
       JSON.stringify(additionalFiles),
       status,
