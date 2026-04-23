@@ -591,6 +591,7 @@ app.post('/api/auth/register', async (req, res) => {
           permissions: user.permissions || DEFAULT_PERMISSIONS.admin,
           companyId: user.company_id,
           plan: 'slim',
+          showClients: false,
           active: user.active
         }
       });
@@ -619,7 +620,7 @@ app.post('/api/auth/login', async (req, res) => {
 
     // Find user with company name (exclude soft-deleted)
     const result = await pool.query(`
-      SELECT u.*, c.name as company_name, c.plan as company_plan
+      SELECT u.*, c.name as company_name, c.plan as company_plan, c.show_clients as company_show_clients
       FROM users u 
       LEFT JOIN companies c ON u.company_id = c.id 
       WHERE u.email = $1 AND u.deleted_at IS NULL
@@ -657,6 +658,7 @@ app.post('/api/auth/login', async (req, res) => {
         companyId: user.company_id,
         companyName: user.company_name,
         plan: user.company_plan || 'slim',
+        showClients: user.company_show_clients !== false,
         active: user.active
       }
     });
@@ -1399,17 +1401,24 @@ app.post('/api/contracts', authenticateToken, requireAdmin, checkCompanyAccess, 
       consultantVatRate
     } = req.body;
 
-    if (!contractNumber || !consultantId || !clientId || !fromDate || !toDate || !purchasePrice || !sellPrice) {
-      return res.status(400).json({ error: 'All fields including contract number are required' });
+    // ✅ Only contract number + consultant + dates are truly required
+    // Client, prices, and VAT rates are now optional (slim plan support)
+    if (!contractNumber || !consultantId || !fromDate || !toDate) {
+      return res.status(400).json({ error: 'Contract number, consultant, and dates are required' });
     }
 
-    // ✅ SANITIZE: Convert empty strings to null for numeric fields
-    const sanitizedVatRate = vatRate === '' || vatRate === undefined ? null : parseFloat(vatRate);
-    const sanitizedConsultantVatRate = consultantVatRate === '' || consultantVatRate === undefined ? null : parseFloat(consultantVatRate);
+    // ✅ SANITIZE: Convert empty strings / null to NULL for optional numeric/FK fields
+    const toNumOrNull = (v) => (v === '' || v === undefined || v === null) ? null : parseFloat(v);
+    const toIntOrNull = (v) => (v === '' || v === undefined || v === null) ? null : parseInt(v);
+    const sanitizedClientId = toIntOrNull(clientId);
+    const sanitizedPurchasePrice = toNumOrNull(purchasePrice);
+    const sanitizedSellPrice = toNumOrNull(sellPrice);
+    const sanitizedVatRate = toNumOrNull(vatRate);
+    const sanitizedConsultantVatRate = toNumOrNull(consultantVatRate);
 
     const timestamp = Date.now();
     const consultantContractId = `CONS-${timestamp}`;
-    const clientContractId = `CLI-${timestamp}`;
+    const clientContractId = sanitizedClientId ? `CLI-${timestamp}` : null;
 
     const result = await pool.query(`
       INSERT INTO contracts 
@@ -1419,8 +1428,8 @@ app.post('/api/contracts', authenticateToken, requireAdmin, checkCompanyAccess, 
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW()) 
       RETURNING *
     `, [
-      contractNumber, consultantId, clientId, fromDate, toDate, 
-      purchasePrice, sellPrice, 
+      contractNumber, consultantId, sanitizedClientId, fromDate, toDate, 
+      sanitizedPurchasePrice, sanitizedSellPrice, 
       consultantContractId, clientContractId,
       vatEnabled, sanitizedVatRate,
       consultantVatEnabled, sanitizedConsultantVatRate,
@@ -1538,9 +1547,14 @@ app.put('/api/contracts/:id', authenticateToken, requireAdmin, checkCompanyAcces
       return res.status(404).json({ error: 'Contract not found' });
     }
 
-    // Sanitize VAT rates
-    const sanitizedVatRate = vatRate === '' || vatRate === undefined ? null : parseFloat(vatRate);
-    const sanitizedConsultantVatRate = consultantVatRate === '' || consultantVatRate === undefined ? null : parseFloat(consultantVatRate);
+    // ✅ Sanitize: empty/null for optional fields becomes NULL
+    const toNumOrNull = (v) => (v === '' || v === undefined || v === null) ? null : parseFloat(v);
+    const toIntOrNull = (v) => (v === '' || v === undefined || v === null) ? null : parseInt(v);
+    const sanitizedClientId = toIntOrNull(clientId);
+    const sanitizedPurchasePrice = toNumOrNull(purchasePrice);
+    const sanitizedSellPrice = toNumOrNull(sellPrice);
+    const sanitizedVatRate = toNumOrNull(vatRate);
+    const sanitizedConsultantVatRate = toNumOrNull(consultantVatRate);
 
     const result = await pool.query(
       `UPDATE contracts 
@@ -1549,7 +1563,8 @@ app.put('/api/contracts/:id', authenticateToken, requireAdmin, checkCompanyAcces
            consultant_vat_enabled = $10, consultant_vat_rate = $11, updated_at = NOW()
        WHERE id = $12 AND company_id = $13 AND deleted_at IS NULL
        RETURNING *`,
-      [contractNumber, consultantId, clientId, fromDate, toDate, purchasePrice, sellPrice,
+      [contractNumber, consultantId, sanitizedClientId, fromDate, toDate, 
+       sanitizedPurchasePrice, sanitizedSellPrice,
        vatEnabled, sanitizedVatRate, consultantVatEnabled, sanitizedConsultantVatRate, id, req.companyId]
     );
 
@@ -4020,6 +4035,33 @@ app.put('/api/superadmin/companies/:id/plan', authenticateToken, requireSuperAdm
   }
 });
 
+// Update company show_clients flag (super admin only)
+app.put('/api/superadmin/companies/:id/show-clients', authenticateToken, requireSuperAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { showClients } = req.body;
+    if (typeof showClients !== 'boolean') {
+      return res.status(400).json({ error: 'showClients must be boolean' });
+    }
+    const result = await pool.query(
+      'UPDATE companies SET show_clients = $1 WHERE id = $2 RETURNING id, name, plan, show_clients',
+      [showClients, id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Company not found' });
+    }
+    await logAudit(
+      req.companyId || req.user.company_id, req.user.id, req.user.email,
+      'UPDATE_COMPANY_SHOW_CLIENTS', 'company', parseInt(id),
+      { show_clients: showClients }
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Update show_clients error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 app.post('/api/superadmin/impersonate/:companyId', authenticateToken, requireSuperAdmin, async (req, res) => {
   try {
     const { companyId } = req.params;
@@ -4278,6 +4320,19 @@ app.patch('/api/consultants/:id/reminder-toggle', authenticateToken, requireAdmi
     console.log('✅ companies.plan column ready');
   } catch (err) {
     console.error('Migration warning (companies.plan):', err.message);
+  }
+})();
+
+// Auto-migrate: show_clients flag on companies
+(async () => {
+  try {
+    await pool.query(`
+      ALTER TABLE companies
+        ADD COLUMN IF NOT EXISTS show_clients BOOLEAN NOT NULL DEFAULT true
+    `);
+    console.log('✅ companies.show_clients column ready');
+  } catch (err) {
+    console.error('Migration warning (companies.show_clients):', err.message);
   }
 })();
 
