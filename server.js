@@ -5109,6 +5109,15 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Invoice Generator API running on port ${PORT}`);
   console.log(`📊 Health check: http://localhost:${PORT}/health`);
+
+  // Email ingestion worker (replaces the old N8N workflow).
+  // Stays disabled unless IMAP_HOST/IMAP_USER/IMAP_PASSWORD are set.
+  try {
+    const { startEmailWorker } = require('./email-worker');
+    startEmailWorker({ pool, supabase, port: PORT });
+  } catch (err) {
+    console.warn('[email-worker] failed to start:', err.message);
+  }
 });
 
 module.exports = app;
