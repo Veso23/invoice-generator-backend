@@ -2632,7 +2632,7 @@ app.post('/api/timesheets/analyze', async (req, res) => {
   try {
     const {
       companyId, senderEmail, recipientEmail,
-      extractedTexts
+      extractedTexts, messageId
     } = req.body;
 
     if (!companyId) return res.status(400).json({ error: 'companyId required' });
@@ -2740,8 +2740,8 @@ Rules:
         company_id, sender_email, recipient_email,
         person_name, month, pdf_days,
         timesheet_file_url, additional_files,
-        status, notes, created_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+        status, notes, message_id, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
       RETURNING *
     `, [
       companyId, senderEmail, recipientEmail,
@@ -2751,7 +2751,8 @@ Rules:
       timesheetFileUrl,
       JSON.stringify(additionalFiles),
       status,
-      notes
+      notes,
+      messageId || null
     ]);
 
     res.status(201).json(insertResult.rows[0]);

@@ -46,19 +46,24 @@ function warn(...args) { console.warn('[email-worker]', ...args); }
 function startEmailWorker({ pool, supabase, port }) {
   const { IMAP_HOST, IMAP_USER, IMAP_PASSWORD } = process.env;
 
+  // Column is used by /api/timesheets/analyze too, so ensure it
+  // exists even when the worker itself stays disabled.
+  const schemaReady = ensureSchema(pool).catch(err => {
+    warn('schema init failed:', err.message);
+    return null;
+  });
+
   if (!IMAP_HOST || !IMAP_USER || !IMAP_PASSWORD) {
     log('disabled — set IMAP_HOST, IMAP_USER and IMAP_PASSWORD to enable.');
     return;
   }
 
-  ensureSchema(pool)
-    .then(() => {
-      log(`enabled — polling ${MAILBOX} on ${IMAP_HOST} every ${POLL_INTERVAL_MS / 60000} min`);
-      // First run shortly after boot (lets the HTTP server come up first)
-      setTimeout(() => pollSafe(pool, supabase, port), 15 * 1000);
-      setInterval(() => pollSafe(pool, supabase, port), POLL_INTERVAL_MS);
-    })
-    .catch(err => warn('schema init failed, worker disabled:', err.message));
+  schemaReady.then(() => {
+    log(`enabled — polling ${MAILBOX} on ${IMAP_HOST} every ${POLL_INTERVAL_MS / 60000} min`);
+    // First run shortly after boot (lets the HTTP server come up first)
+    setTimeout(() => pollSafe(pool, supabase, port), 15 * 1000);
+    setInterval(() => pollSafe(pool, supabase, port), POLL_INTERVAL_MS);
+  });
 }
 
 async function ensureSchema(pool) {
@@ -218,10 +223,11 @@ async function processOne(client, uid, pool, supabase, port) {
     }
 
     // ---- Analyze via the local endpoint (same logic path as N8N used) ----
+    // messageId is stored atomically in the INSERT for dedupe.
     const resp = await fetch(`http://127.0.0.1:${port}/api/timesheets/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ companyId, senderEmail, recipientEmail, extractedTexts }),
+      body: JSON.stringify({ companyId, senderEmail, recipientEmail, extractedTexts, messageId }),
     });
 
     const body = await resp.json().catch(() => ({}));
@@ -229,24 +235,9 @@ async function processOne(client, uid, pool, supabase, port) {
       throw new Error(`analyze returned ${resp.status}: ${body.error || body.detail || 'unknown'}`);
     }
 
-    // ---- Stamp message_id on the created row for dedupe ----
-    const createdId = body.id || body.log?.id || (Array.isArray(body) ? body[0]?.id : null);
-    if (createdId) {
-      await pool.query('UPDATE automation_logs SET message_id = $1 WHERE id = $2', [messageId, createdId]);
-    } else {
-      // Fallback: stamp the most recent row for this sender/company
-      await pool.query(
-        `UPDATE automation_logs SET message_id = $1
-         WHERE id = (SELECT id FROM automation_logs
-                     WHERE company_id = $2 AND sender_email = $3 AND message_id IS NULL
-                     ORDER BY id DESC LIMIT 1)`,
-        [messageId, companyId, senderEmail]
-      );
-    }
-
     await markSeen(client, uid);
     attemptCounts.delete(messageId);
-    log(`processed ${messageId} — ${pdfs.length} PDF(s), log #${createdId || '?'}`);
+    log(`processed ${messageId} — ${pdfs.length} PDF(s), log #${body.id || '?'}`);
   } catch (err) {
     // Leave unseen → retried next cycle (bounded by MAX_ATTEMPTS)
     warn(`error on ${messageId} (attempt ${attemptCounts.get(messageId) || 1}): ${err.message}`);
@@ -257,8 +248,8 @@ async function processOne(client, uid, pool, supabase, port) {
 // Helpers
 // ------------------------------------------------------------
 async function markSeen(client, uid) {
-  await client.messageFlagsAdd({ uid: String(uid) }, ['\\Seen'], { uid: false })
-    .catch(e => warn(`could not mark uid ${uid} seen: ${e.message}`));
+  await client.messageFlagsAdd(String(uid), ['\\Seen'])
+    .catch(e => warn(`could not mark message ${uid} seen: ${e.message}`));
 }
 
 async function resolveCompanyId(pool) {
