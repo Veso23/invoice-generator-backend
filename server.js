@@ -2640,10 +2640,28 @@ app.post('/api/timesheets/analyze', async (req, res) => {
       return res.status(400).json({ error: 'No extracted texts provided' });
     }
 
-    // Build prompt for OpenAI — classify each file + extract timesheet data only
+    // Plan gate: 'full' plan also extracts invoice data + runs comparison
+    const planRow = await pool.query('SELECT plan FROM companies WHERE id = $1', [companyId]);
+    const isFullPlan = (planRow.rows[0]?.plan || 'slim') === 'full';
+
+    // Build prompt for OpenAI — classify each file + extract timesheet data
     const filesText = extractedTexts.map((f, i) =>
       `--- FILE ${i + 1} (${f.fileName}) ---\n${f.text}`
     ).join('\n\n');
+
+    const invoiceInstructions = isFullPlan ? `
+If a file is an INVOICE, also extract:
+- invoice_total (total amount EXCLUDING VAT if a subtotal is shown, otherwise the total; number only)
+- invoice_days (number of days billed, decimal allowed)
+- invoice_daily_rate (price per day, number only)` : '';
+
+    const invoiceExample = isFullPlan
+      ? `{ "type": "invoice", "invoice_total": 5060, "invoice_days": 22, "invoice_daily_rate": 230 }`
+      : `{ "type": "invoice" }`;
+
+    const invoiceRule = isFullPlan
+      ? `- invoice_total / invoice_days / invoice_daily_rate: only present on invoice entries. Use null when a value cannot be determined.`
+      : `- DO NOT extract invoice amounts, rates, dates, or invoice numbers.`;
 
     const prompt = `Analyze these ${extractedTexts.length} document(s) from a consultant.
 
@@ -2656,6 +2674,7 @@ If a file is a TIMESHEET, also extract:
 - days_worked (total days, decimal allowed like 21.5)
 - month (in English, capitalized, e.g. "January")
 - person_name (consultant's full name)
+${invoiceInstructions}
 
 ${filesText}
 
@@ -2663,7 +2682,7 @@ Return ONLY valid JSON with this exact structure (one entry per file, in order):
 {
   "files": [
     { "type": "timesheet", "days_worked": 22, "month": "January", "person_name": "John Doe" },
-    { "type": "invoice" },
+    ${invoiceExample},
     { "type": "other" }
   ]
 }
@@ -2673,7 +2692,7 @@ Rules:
 - "type" must be exactly "timesheet", "invoice", or "other".
 - If multiple files look like timesheets, only mark the ONE with the clearest day-by-day breakdown as "timesheet"; classify the rest as "other".
 - days_worked / month / person_name: only present on the timesheet entry. Use null if a timesheet is present but days cannot be determined.
-- DO NOT extract invoice amounts, rates, dates, or invoice numbers.`;
+${invoiceRule}`;
 
     // Call OpenAI
     const openaiKey = process.env.OPENAI_API_KEY;
@@ -2688,7 +2707,7 @@ Rules:
       body: JSON.stringify({
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 400,
+        max_tokens: 600,
         temperature: 0
       })
     });
@@ -2734,14 +2753,82 @@ Rules:
       notes = 'Timesheet detected but days could not be extracted. Please set days manually.';
     }
 
-    // Save to automation_logs — slim-mode fields only
+    // ---- FULL PLAN: invoice extraction + comparison against contract ----
+    const toNum = v => (v === null || v === undefined || v === '' || isNaN(Number(v))) ? null : Number(v);
+
+    const invIdx = aiFiles.findIndex(f => f && f.type === 'invoice');
+    const invoiceEntry = isFullPlan && invIdx >= 0 ? aiFiles[invIdx] : null;
+    const hasInvoice = !!invoiceEntry;
+
+    const invoiceFileUrl = hasInvoice ? (extractedTexts[invIdx]?.url || null) : null;
+    const invoiceTotal = hasInvoice ? toNum(invoiceEntry.invoice_total) : null;
+    const invoiceDays = hasInvoice ? toNum(invoiceEntry.invoice_days) : null;
+    const invoiceDailyRate = hasInvoice ? toNum(invoiceEntry.invoice_daily_rate) : null;
+
+    // Contract rate: consultant's purchase_price on their active contract
+    let contractRate = null;
+    if (isFullPlan) {
+      const rateRow = await pool.query(`
+        SELECT ct.purchase_price
+        FROM contracts ct
+        JOIN consultants cons ON ct.consultant_id = cons.id
+        WHERE cons.company_id = $1
+          AND LOWER(cons.email) = LOWER($2)
+          AND cons.deleted_at IS NULL
+          AND ct.deleted_at IS NULL
+          AND (ct.to_date IS NULL OR ct.to_date >= CURRENT_DATE)
+        ORDER BY ct.from_date DESC NULLS LAST
+        LIMIT 1
+      `, [companyId, senderEmail]);
+      contractRate = toNum(rateRow.rows[0]?.purchase_price);
+    }
+
+    // Comparison (only when both sides of each check are known)
+    let daysMatch = null;
+    let amountMatch = null;
+    const comparisonParts = [];
+
+    if (isFullPlan && hasInvoice) {
+      const tsDays = toNum(timesheetEntry?.days_worked);
+
+      if (tsDays !== null && invoiceDays !== null) {
+        daysMatch = Math.abs(tsDays - invoiceDays) < 0.01;
+        if (!daysMatch) comparisonParts.push(`Days mismatch: timesheet ${tsDays} vs invoice ${invoiceDays}`);
+      }
+
+      if (contractRate !== null && invoiceDailyRate !== null) {
+        const rateOk = Math.abs(contractRate - invoiceDailyRate) < 0.01;
+        if (!rateOk) comparisonParts.push(`Rate mismatch: contract ${contractRate} vs invoice ${invoiceDailyRate}`);
+      }
+
+      // Expected amount: prefer contract rate, fall back to invoice's own rate
+      const rateForAmount = contractRate !== null ? contractRate : invoiceDailyRate;
+      const daysForAmount = tsDays !== null ? tsDays : invoiceDays;
+      if (rateForAmount !== null && daysForAmount !== null && invoiceTotal !== null) {
+        const expected = rateForAmount * daysForAmount;
+        amountMatch = Math.abs(expected - invoiceTotal) < 0.01;
+        if (!amountMatch) comparisonParts.push(`Amount mismatch: expected ${expected.toFixed(2)} (${daysForAmount} × ${rateForAmount}) vs invoice ${invoiceTotal}`);
+      }
+
+      if ((daysMatch === false || amountMatch === false) && status === null) {
+        status = 'review';
+      }
+    }
+
+    const comparisonNotes = comparisonParts.length > 0 ? comparisonParts.join('; ') : null;
+
+    // Save to automation_logs
     const insertResult = await pool.query(`
       INSERT INTO automation_logs (
         company_id, sender_email, recipient_email,
         person_name, month, pdf_days,
         timesheet_file_url, additional_files,
-        status, notes, message_id, created_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+        status, notes, message_id,
+        has_invoice, invoice_file_url, invoice_total, invoice_days, invoice_daily_rate,
+        contract_rate, days_match, amount_match, comparison_notes,
+        created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                $12, $13, $14, $15, $16, $17, $18, $19, $20, NOW())
       RETURNING *
     `, [
       companyId, senderEmail, recipientEmail,
@@ -2752,7 +2839,16 @@ Rules:
       JSON.stringify(additionalFiles),
       status,
       notes,
-      messageId || null
+      messageId || null,
+      hasInvoice,
+      invoiceFileUrl,
+      invoiceTotal,
+      invoiceDays,
+      invoiceDailyRate,
+      contractRate,
+      daysMatch,
+      amountMatch,
+      comparisonNotes
     ]);
 
     res.status(201).json(insertResult.rows[0]);
